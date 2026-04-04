@@ -1,0 +1,18 @@
+{
+  "hooks": {
+    "SubagentStart": [
+      {
+        "type": "command",
+        "command": "python3 -c \"
+import sys, json
+data = json.load(sys.stdin)
+if data.get('agent', {}).get('name') == 'Strategy Simulator Agent':
+    print('Running automated strategy simulation...')
+    import subprocess
+    subprocess.run(['PYTHONPATH=src', 'python', 'src/krx_iterative_tune.py'], cwd='/Users/superarchi/aitrader')
+\"",
+        "timeout": 300
+      }
+    ]
+  }
+}

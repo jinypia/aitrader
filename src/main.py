@@ -1,0 +1,96 @@
+from __future__ import annotations
+
+import argparse
+import logging
+import sys
+import threading
+from pathlib import Path
+
+from bot_runtime import BotState, run_bot
+from cli_dashboard import create_dashboard, RICH_AVAILABLE
+
+
+_log_path = Path("data/bot_runtime.log")
+_log_path.parent.mkdir(parents=True, exist_ok=True)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler(_log_path, encoding="utf-8"),
+    ],
+)
+
+
+def run(enable_dashboard: bool = False, dashboard_interval: float = 1.0) -> None:
+    """Run the trading bot with optional CLI dashboard.
+    
+    Args:
+        enable_dashboard: Enable real-time CLI dashboard
+        dashboard_interval: Dashboard update interval in seconds
+    """
+    stop_event = threading.Event()
+    state = BotState()
+    
+    # Setup dashboard if enabled
+    dashboard = None
+    if enable_dashboard:
+        if not RICH_AVAILABLE:
+            logging.warning("CLI dashboard disabled: 'rich' package not installed")
+            logging.info("Install with: pip install rich")
+        else:
+            try:
+                dashboard = create_dashboard(state, update_interval=dashboard_interval)
+                dashboard.start()
+                logging.info("✓ CLI dashboard started")
+            except Exception as e:
+                logging.error("Failed to start dashboard: %s", e)
+    
+    try:
+        run_bot(stop_event, state)
+    except RuntimeError as exc:
+        stop_event.set()
+        logging.error("Bot start failed: %s", exc)
+    except KeyboardInterrupt:
+        stop_event.set()
+        logging.info("Stopped by user.")
+    except Exception as exc:
+        stop_event.set()
+        logging.error("Unexpected bot error: %s", exc)
+    finally:
+        if dashboard:
+            dashboard.stop()
+
+    # Surface silent startup failures (e.g., runtime lock contention) clearly.
+    if (not state.running) and state.started_at is None:
+        msg = state.last_error or "Bot exited before startup completed."
+        raise RuntimeError(msg)
+
+
+def main() -> None:
+    """Main entry point with CLI argument parsing."""
+    parser = argparse.ArgumentParser(
+        description="AITRADER - Automated Trading Bot with Real-time Dashboard"
+    )
+    parser.add_argument(
+        "--dashboard",
+        action="store_true",
+        help="Enable real-time CLI dashboard for monitoring transactions"
+    )
+    parser.add_argument(
+        "--update-interval",
+        type=float,
+        default=1.0,
+        help="Dashboard update interval in seconds (default: 1.0)"
+    )
+    
+    args = parser.parse_args()
+    try:
+        run(enable_dashboard=args.dashboard, dashboard_interval=args.update_interval)
+    except RuntimeError as exc:
+        logging.error("Run failed: %s", exc)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
