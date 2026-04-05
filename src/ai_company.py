@@ -73,6 +73,12 @@ class ManagerLearningStore:
                 "scalping": 0.0,
                 "defensive": 0.0,
             },
+            "time_bucket_stats": {
+                "opening": {"sells": 0, "wins": 0, "realized": 0.0},
+                "regular": {"sells": 0, "wins": 0, "realized": 0.0},
+                "after": {"sells": 0, "wins": 0, "realized": 0.0},
+                "off": {"sells": 0, "wins": 0, "realized": 0.0},
+            },
             "updated_at": datetime.now().isoformat(timespec="seconds"),
         }
 
@@ -126,6 +132,28 @@ class ManagerLearningStore:
             return "defensive"
         return "trend"
 
+    @staticmethod
+    def _bucket_from_trade_ts(ts_value: str) -> str:
+        raw = str(ts_value or "").strip()
+        if not raw:
+            return "off"
+        try:
+            dt = datetime.fromisoformat(raw)
+        except Exception:
+            try:
+                dt = datetime.strptime(raw, "%Y-%m-%d %H:%M:%S")
+            except Exception:
+                return "off"
+
+        hhmm = dt.hour * 60 + dt.minute
+        if 9 * 60 <= hhmm < 10 * 60:
+            return "opening"
+        if 10 * 60 <= hhmm < 15 * 60 + 20:
+            return "regular"
+        if 15 * 60 + 20 <= hhmm < 16 * 60 + 30:
+            return "after"
+        return "off"
+
     def _collect_sleeve_realized_delta(self) -> dict[str, Any]:
         totals = {
             "trend": 0.0,
@@ -137,6 +165,12 @@ class ManagerLearningStore:
             "scalping": 0.0,
             "defensive": 0.0,
         }
+        bucket_delta = {
+            "opening": {"sells": 0, "wins": 0, "realized": 0.0},
+            "regular": {"sells": 0, "wins": 0, "realized": 0.0},
+            "after": {"sells": 0, "wins": 0, "realized": 0.0},
+            "off": {"sells": 0, "wins": 0, "realized": 0.0},
+        }
         start_idx = int(_safe_float(self._cache.get("last_processed_trade_index"), 0.0))
         end_idx = start_idx
 
@@ -145,6 +179,7 @@ class ManagerLearningStore:
                 return {
                     "totals": totals,
                     "delta": delta,
+                    "bucket_delta": bucket_delta,
                     "new_sells": 0,
                     "start_idx": start_idx,
                     "end_idx": end_idx,
@@ -176,10 +211,17 @@ class ManagerLearningStore:
                 pnl = _safe_float(row.get("realized_pnl"), 0.0)
                 if sleeve in delta:
                     delta[sleeve] += pnl
+                bucket = self._bucket_from_trade_ts(str(row.get("ts") or ""))
+                if bucket in bucket_delta:
+                    bucket_delta[bucket]["sells"] += 1
+                    bucket_delta[bucket]["realized"] += pnl
+                    if pnl > 0:
+                        bucket_delta[bucket]["wins"] += 1
 
             return {
                 "totals": totals,
                 "delta": delta,
+                "bucket_delta": bucket_delta,
                 "new_sells": int(new_sell_count),
                 "start_idx": start_idx,
                 "end_idx": end_idx,
@@ -188,6 +230,7 @@ class ManagerLearningStore:
             return {
                 "totals": totals,
                 "delta": delta,
+                "bucket_delta": bucket_delta,
                 "new_sells": 0,
                 "start_idx": start_idx,
                 "end_idx": end_idx,
@@ -292,6 +335,15 @@ class ManagerLearningStore:
             "scalping": round(_safe_float((sleeve_attr.get("totals") or {}).get("scalping"), 0.0), 4),
             "defensive": round(_safe_float((sleeve_attr.get("totals") or {}).get("defensive"), 0.0), 4),
         }
+        bucket_stats = dict(self._cache.get("time_bucket_stats") or {})
+        for bucket in ["opening", "regular", "after", "off"]:
+            cur = dict(bucket_stats.get(bucket) or {"sells": 0, "wins": 0, "realized": 0.0})
+            add = dict((sleeve_attr.get("bucket_delta") or {}).get(bucket) or {})
+            cur["sells"] = int(cur.get("sells") or 0) + int(add.get("sells") or 0)
+            cur["wins"] = int(cur.get("wins") or 0) + int(add.get("wins") or 0)
+            cur["realized"] = round(_safe_float(cur.get("realized"), 0.0) + _safe_float(add.get("realized"), 0.0), 4)
+            bucket_stats[bucket] = cur
+        self._cache["time_bucket_stats"] = bucket_stats
         self._save()
 
         return {
@@ -304,6 +356,8 @@ class ManagerLearningStore:
                 "defensive": round(_safe_float((sleeve_attr.get("delta") or {}).get("defensive"), 0.0), 4),
             },
             "sleeve_realized_totals": self._cache.get("sleeve_realized_totals") or {},
+            "time_bucket_delta": sleeve_attr.get("bucket_delta") or {},
+            "time_bucket_stats": self._cache.get("time_bucket_stats") or {},
             "new_sell_trades": int(sleeve_attr.get("new_sells") or 0),
             "buy_fills": int(buy_fills),
             "sell_fills": int(sell_fills),
@@ -815,7 +869,12 @@ class ManagerAgent:
         self.event_report_cooldown_seconds = max(10, int(event_report_cooldown_seconds))
 
     @staticmethod
-    def _build_work_orders(state: BotState, prev_vector: dict[str, Any], triggers: list[str]) -> dict[str, str]:
+    def _build_work_orders(
+        state: BotState,
+        prev_vector: dict[str, Any],
+        triggers: list[str],
+        latest_learning: dict[str, Any],
+    ) -> dict[str, str]:
         urgency = "normal"
         risk_level = str(prev_vector.get("risk_level") or "LOW")
         if risk_level in {"HIGH", "CRITICAL"} or ("risk_change" in triggers):
@@ -823,19 +882,34 @@ class ManagerAgent:
         if "policy_change" in triggers:
             urgency = "high"
 
+        phase_map = {
+            "OPENING_FOCUS": "opening",
+            "REGULAR_SESSION": "regular",
+            "AFTER_MARKET": "after",
+        }
+        current_bucket = phase_map.get(str(state.session_phase or "").upper(), "off")
+        bucket_stats = dict(latest_learning.get("time_bucket_stats") or {})
+        cur_bucket_stats = dict(bucket_stats.get(current_bucket) or {})
+        bucket_realized = _safe_float(cur_bucket_stats.get("realized"), 0.0)
+        bucket_sells = int(cur_bucket_stats.get("sells") or 0)
+        if bucket_sells >= 3 and bucket_realized < 0:
+            urgency = "high"
+
+        bucket_hint = f"bucket={current_bucket} realized={bucket_realized:+.0f} sells={bucket_sells}"
+
         prefix = f"[{urgency}]"
         symbol = str(state.selected_symbol or "current_target")
         return {
-            "market_analysis": f"{prefix} Refresh regime/flow for {symbol} and detect edge shifts.",
-            "investment_strategy": f"{prefix} Update action hint targeting higher expected return with controlled risk.",
-            "risk_guard": f"{prefix} Re-check heat, stale data, and halt guards before next decisions.",
+            "market_analysis": f"{prefix} Refresh regime/flow for {symbol} and detect edge shifts. {bucket_hint}",
+            "investment_strategy": f"{prefix} Update action hint targeting higher expected return with controlled risk. {bucket_hint}",
+            "risk_guard": f"{prefix} Re-check heat, stale data, and halt guards before next decisions. {bucket_hint}",
             "execution": f"{prefix} Keep runtime healthy and report execution degradation immediately.",
-            "performance_feedback": f"{prefix} Learn from recent return/risk outcomes and tune sleeve biases.",
-            "capital_allocation": f"{prefix} Rebalance trend/scalping/defensive sleeves for risk-adjusted performance.",
-            "invest_trend": f"{prefix} Focus on quality trend setups; avoid weak momentum entries.",
-            "invest_scalping": f"{prefix} Hunt short-horizon trades only when spread/risk profile is acceptable.",
-            "invest_defensive": f"{prefix} Preserve capital and maintain downside buffer during stress.",
-            "order_policy": f"{prefix} Enforce ALLOW/BLOCK gate to avoid low-conviction or high-risk orders.",
+            "performance_feedback": f"{prefix} Learn from recent return/risk outcomes and tune sleeve biases. {bucket_hint}",
+            "capital_allocation": f"{prefix} Rebalance trend/scalping/defensive sleeves for risk-adjusted performance. {bucket_hint}",
+            "invest_trend": f"{prefix} Focus on quality trend setups; avoid weak momentum entries. {bucket_hint}",
+            "invest_scalping": f"{prefix} Hunt short-horizon trades only when spread/risk profile is acceptable. {bucket_hint}",
+            "invest_defensive": f"{prefix} Preserve capital and maintain downside buffer during stress. {bucket_hint}",
+            "order_policy": f"{prefix} Enforce ALLOW/BLOCK gate to avoid low-conviction or high-risk orders. {bucket_hint}",
         }
 
     @staticmethod
@@ -896,7 +970,7 @@ class ManagerAgent:
             outputs: list[AgentOutput] = []
             by_name: dict[str, AgentOutput] = {}
             warmup_triggers = ["startup"] if not prev_vector else []
-            work_orders = self._build_work_orders(state, prev_vector, warmup_triggers)
+            work_orders = self._build_work_orders(state, prev_vector, warmup_triggers, latest_learning)
             base_context: dict[str, Any] = {
                 "bot_thread": bot_thread,
                 "by_name": by_name,

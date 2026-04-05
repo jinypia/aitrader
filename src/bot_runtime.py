@@ -1747,7 +1747,7 @@ def _infer_ai_sleeve(entry_mode: str, setup_state: str, strategy_mode: str = "")
 def _infer_ai_sleeve_reason(entry_mode: str, setup_state: str, strategy_mode: str = "") -> str:
     mode = str(strategy_mode or "").strip().upper()
     if mode == "SCALPING":
-        return "strategy_mode:SCALPING"
+        return "RSN_STRATEGY_MODE_SCALPING"
 
     merged = " ".join(
         [
@@ -1758,10 +1758,10 @@ def _infer_ai_sleeve_reason(entry_mode: str, setup_state: str, strategy_mode: st
     ).upper()
 
     if "SCALP" in merged:
-        return "keyword:SCALP"
+        return "RSN_KEYWORD_SCALP"
     if any(key in merged for key in ["DEFENSIVE", "RISK_OFF", "BEARISH", "CAPITAL_PRESERVATION"]):
-        return "keyword:DEFENSIVE_RISK_OFF"
-    return "default:TREND"
+        return "RSN_KEYWORD_DEFENSIVE_RISK_OFF"
+    return "RSN_DEFAULT_TREND"
 
 
 def _period_return(equity_history: list[dict], current_equity: float, days: int) -> float:
