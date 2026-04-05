@@ -109,6 +109,7 @@ class ManagerLearningStore:
             },
             "reason_code_stats": {},
             "reason_code_ema": {},
+            "reason_code_ema_alpha": {},
             "updated_at": datetime.now().isoformat(timespec="seconds"),
         }
 
@@ -407,7 +408,10 @@ class ManagerLearningStore:
         reason_delta = dict(sleeve_attr.get("reason_delta") or {})
         reason_totals = dict(sleeve_attr.get("reason_totals") or {})
         reason_ema = dict(self._cache.get("reason_code_ema") or {})
-        reason_ema_alpha: dict[str, float] = {}
+        reason_ema_alpha = {
+            str(k): round(_safe_float(v, 0.0), 4)
+            for k, v in dict(self._cache.get("reason_code_ema_alpha") or {}).items()
+        }
         reason_signal_summary: dict[str, float] = {"trend": 0.0, "scalping": 0.0, "defensive": 0.0}
 
         # Update EMA with recent reason performance (delta window).
@@ -492,6 +496,7 @@ class ManagerLearningStore:
             bucket_stats[bucket] = cur
         self._cache["time_bucket_stats"] = bucket_stats
         self._cache["reason_code_ema"] = reason_ema
+        self._cache["reason_code_ema_alpha"] = reason_ema_alpha
         reason_totals = dict(sleeve_attr.get("reason_totals") or {})
         normalized_reason_stats: dict[str, dict[str, float]] = {}
         for reason, row in reason_totals.items():

@@ -332,6 +332,7 @@ Manager command model:
 - Reason-code expectancy also includes recency-weighted EMA (`ema_expectancy`) and blended score (`blended_expectancy`).
 - EMA speed is dynamic per reason code (`ema_alpha`), adapting to sample size and recent volatility.
 - EMA speed is sleeve-aware: trend/scalping reasons adapt faster, defensive reasons adapt slower.
+- Last known per-reason `ema_alpha` is retained across manager cycles in learning state.
 
 Runtime tuning keys (in `.env` or `data/runtime_config.json`):
 
