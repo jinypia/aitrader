@@ -1,5 +1,7 @@
 # Weekday Scalping Automation - Complete Setup Guide
 
+For the full documentation map, see `docs/README.md`.
+
 ## 🎯 What This System Does
 
 Every weekday morning, this system will:
