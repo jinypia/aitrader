@@ -336,6 +336,39 @@ class ManagerLearningStore:
                 bias[sleeve] -= 0.03
                 reasons.append(f"attr_loss_{sleeve}")
 
+        # Reason-code expectancy signal: apply sleeve-level reinforcement from
+        # standardized reason performance, but only when sample size is sufficient.
+        reason_delta = dict(sleeve_attr.get("reason_delta") or {})
+        reason_signal_summary: dict[str, float] = {"trend": 0.0, "scalping": 0.0, "defensive": 0.0}
+        for code, row in reason_delta.items():
+            if not isinstance(row, dict):
+                continue
+            sells = int(_safe_float(row.get("sells"), 0.0))
+            if sells <= 0:
+                continue
+            avg_realized = _safe_float(row.get("realized"), 0.0) / max(1, sells)
+
+            code_u = str(code).upper()
+            target_sleeve = "trend"
+            if "SCALP" in code_u:
+                target_sleeve = "scalping"
+            elif "DEFENSIVE" in code_u or "RISK_OFF" in code_u or "BEARISH" in code_u:
+                target_sleeve = "defensive"
+
+            # Convert expectancy into bounded adjustment and require at least 2 sells.
+            if sells >= 2:
+                adj = _clamp(avg_realized / 20000.0, -0.03, 0.03)
+                if abs(adj) >= 0.005:
+                    bias[target_sleeve] += adj
+                    reason_signal_summary[target_sleeve] = round(
+                        _safe_float(reason_signal_summary.get(target_sleeve), 0.0) + adj,
+                        4,
+                    )
+                    if adj > 0:
+                        reasons.append(f"reason_expectancy_gain_{target_sleeve}")
+                    else:
+                        reasons.append(f"reason_expectancy_loss_{target_sleeve}")
+
         if risk_level in {"HIGH", "CRITICAL"}:
             bias["trend"] -= 0.02
             bias["scalping"] -= 0.02
@@ -401,6 +434,7 @@ class ManagerLearningStore:
             "time_bucket_stats": self._cache.get("time_bucket_stats") or {},
             "reason_code_delta": sleeve_attr.get("reason_delta") or {},
             "reason_code_stats": self._cache.get("reason_code_stats") or {},
+            "reason_signal_summary": reason_signal_summary,
             "new_sell_trades": int(sleeve_attr.get("new_sells") or 0),
             "buy_fills": int(buy_fills),
             "sell_fills": int(sell_fills),
@@ -1124,10 +1158,11 @@ class ManagerAgent:
             latest_learning = learn_result
             if learn_result.get("reasons"):
                 logging.info(
-                    "MANAGER_LEARN delta=%.4f realized_delta=%.2f sleeve_delta=%s new_sells=%s fills(b=%s,s=%s) reasons=%s bias=%s",
+                    "MANAGER_LEARN delta=%.4f realized_delta=%.2f sleeve_delta=%s reason_signal=%s new_sells=%s fills(b=%s,s=%s) reasons=%s bias=%s",
                     _safe_float(learn_result.get("pnl_delta_pct"), 0.0),
                     _safe_float(learn_result.get("realized_delta"), 0.0),
                     learn_result.get("sleeve_realized_delta"),
+                    learn_result.get("reason_signal_summary"),
                     int(learn_result.get("new_sell_trades") or 0),
                     int(learn_result.get("buy_fills") or 0),
                     int(learn_result.get("sell_fills") or 0),

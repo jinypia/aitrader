@@ -327,6 +327,7 @@ Manager command model:
 - `ai_sleeve_reason` now uses standardized codes (e.g., `RSN_STRATEGY_MODE_SCALPING`, `RSN_KEYWORD_DEFENSIVE_RISK_OFF`).
 - Learning state includes time-bucket stats (`opening`/`regular`/`after`/`off`) and manager work orders adapt using those stats.
 - Learning state also tracks `reason_code_stats` (sells/wins/win_rate/avg_realized by reason code), and manager urgency reflects poor-performing reason codes.
+- Reason-code expectancy now directly nudges sleeve bias updates (`reason_signal_summary`) in addition to manager urgency.
 
 Tune event cadence:
 
