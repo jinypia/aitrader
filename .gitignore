@@ -4,3 +4,7 @@ logs/
 .venv/
 personal/
 README.md
+data/
+src/__pycache__/
+__pycache__/
+*.pyc
