@@ -122,6 +122,7 @@ class ManagerLearningStore:
                 "confidence": 0.0,
                 "risk_level": "LOW",
             },
+            "daily_outlook_history": {},
             "updated_at": datetime.now().isoformat(timespec="seconds"),
         }
 
@@ -618,8 +619,19 @@ class ManagerLearningStore:
             "confidence": round(_clamp(avg_confidence, 0.0, 1.0), 4),
             "risk_level": risk_level,
         }
+
+        today_key = datetime.now().date().isoformat()
+        daily_outlook_history = dict(self._cache.get("daily_outlook_history") or {})
+        daily_outlook_history[today_key] = {
+            **daily_outlook,
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        if len(daily_outlook_history) > 180:
+            keep_keys = sorted(daily_outlook_history.keys())[-180:]
+            daily_outlook_history = {k: daily_outlook_history[k] for k in keep_keys}
         self._cache["reason_code_stats"] = normalized_reason_stats
         self._cache["daily_outlook"] = daily_outlook
+        self._cache["daily_outlook_history"] = daily_outlook_history
         self._save()
 
         return {
@@ -637,6 +649,7 @@ class ManagerLearningStore:
             "reason_code_delta": sleeve_attr.get("reason_delta") or {},
             "reason_code_stats": self._cache.get("reason_code_stats") or {},
             "daily_outlook": self._cache.get("daily_outlook") or {},
+            "daily_outlook_history": self._cache.get("daily_outlook_history") or {},
             "reason_signal_summary": reason_signal_summary,
             "new_sell_trades": int(sleeve_attr.get("new_sells") or 0),
             "buy_fills": int(buy_fills),
@@ -688,6 +701,7 @@ class PerformanceFeedbackAgent(BaseAgent):
                 "worst_reason_code": worst_reason,
                 "reason_code_stats": reason_stats,
                 "daily_outlook": dict(snap.get("daily_outlook") or {}),
+                "daily_outlook_history": dict(snap.get("daily_outlook_history") or {}),
                 "updated_at": str(snap.get("updated_at") or ""),
             },
         )
