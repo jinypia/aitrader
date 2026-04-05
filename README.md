@@ -336,6 +336,7 @@ Manager command model:
 - Manager learning now computes `daily_outlook` from actual realized SELL history quality and reason expectancy.
 - `daily_outlook` includes `market_quality_score`, `expected_daily_profit_krw`, and `expected_daily_profit_rate_pct` for daily manager outlook guidance.
 - Manager learning also persists `daily_outlook_history` by date so the manager can track expected-profit outlook day by day.
+- Manager reports now include a 7-day outlook trend signal (`daily_outlook_trend`) with direction (`up`/`flat`/`down`) and rate delta.
 
 Runtime tuning keys (in `.env` or `data/runtime_config.json`):
 

@@ -995,12 +995,49 @@ class ReportingAgent(BaseAgent):
     def __init__(self, report_path: str) -> None:
         self.report_path = Path(report_path)
 
+    @staticmethod
+    def _build_outlook_trend(daily_outlook_history: dict[str, Any]) -> dict[str, Any]:
+        rows = [
+            (str(day), dict(payload))
+            for day, payload in dict(daily_outlook_history or {}).items()
+            if isinstance(payload, dict)
+        ]
+        rows.sort(key=lambda x: x[0])
+        recent = rows[-7:]
+        prev = rows[-14:-7]
+
+        def _avg_rate(items: list[tuple[str, dict[str, Any]]]) -> float:
+            if not items:
+                return 0.0
+            values = [_safe_float((payload or {}).get("expected_daily_profit_rate_pct"), 0.0) for _, payload in items]
+            return sum(values) / float(len(values)) if values else 0.0
+
+        recent_avg = _avg_rate(recent)
+        prev_avg = _avg_rate(prev)
+        delta = recent_avg - prev_avg
+
+        direction = "flat"
+        if delta >= 0.03:
+            direction = "up"
+        elif delta <= -0.03:
+            direction = "down"
+
+        return {
+            "window_days": len(recent),
+            "recent_avg_rate_pct": round(recent_avg, 4),
+            "previous_avg_rate_pct": round(prev_avg, 4),
+            "delta_rate_pct": round(delta, 4),
+            "direction": direction,
+        }
+
     def execute(self, state: BotState, context: dict[str, Any]) -> AgentOutput:
         outputs: list[AgentOutput] = list(context.get("agent_outputs") or [])
         report_kind = str(context.get("report_kind") or "hourly")
         triggers = list(context.get("triggers") or [])
         learning = dict(context.get("learning") or {})
         daily_outlook = dict(learning.get("daily_outlook") or {})
+        daily_outlook_history = dict(learning.get("daily_outlook_history") or {})
+        daily_trend = self._build_outlook_trend(daily_outlook_history)
         now = datetime.now().isoformat(timespec="seconds")
         snapshot = {
             "timestamp": now,
@@ -1019,6 +1056,7 @@ class ReportingAgent(BaseAgent):
                 "total_return_pct": _safe_float(state.total_return_pct),
             },
             "learning": learning,
+            "daily_outlook_trend": daily_trend,
             "agent_outputs": [
                 {
                     "agent": o.agent,
@@ -1035,9 +1073,11 @@ class ReportingAgent(BaseAgent):
         outlook_label = str(daily_outlook.get("label") or "INSUFFICIENT_DATA")
         outlook_rate = _safe_float(daily_outlook.get("expected_daily_profit_rate_pct"), 0.0)
         quality_score = _safe_float(daily_outlook.get("market_quality_score"), 0.0)
+        trend_dir = str(daily_trend.get("direction") or "flat")
+        trend_delta = _safe_float(daily_trend.get("delta_rate_pct"), 0.0)
         summary = (
             f"manager_report kind={report_kind}{trigger_part} ts={now} "
-            f"symbol={state.selected_symbol or '-'} outlook={outlook_label} exp_day={outlook_rate:+.2f}% quality={quality_score:.1f} {one_line}"
+            f"symbol={state.selected_symbol or '-'} outlook={outlook_label} exp_day={outlook_rate:+.2f}% quality={quality_score:.1f} trend7={trend_dir}({trend_delta:+.2f}%) {one_line}"
         ).strip()
         return AgentOutput(agent=self.name, summary=summary, payload=snapshot)
 
@@ -1131,17 +1171,20 @@ class ManagerSlackNotifier:
         state = payload.get("state") if isinstance(payload.get("state"), dict) else {}
         learning = payload.get("learning") if isinstance(payload.get("learning"), dict) else {}
         outlook = learning.get("daily_outlook") if isinstance(learning.get("daily_outlook"), dict) else {}
+        trend = payload.get("daily_outlook_trend") if isinstance(payload.get("daily_outlook_trend"), dict) else {}
         symbol = str(state.get("selected_symbol") or "-")
         regime = str(state.get("market_regime") or "UNKNOWN")
         ret = _safe_float(state.get("total_return_pct"), 0.0)
         exp_rate = _safe_float(outlook.get("expected_daily_profit_rate_pct"), 0.0)
         quality = _safe_float(outlook.get("market_quality_score"), 0.0)
         label = str(outlook.get("label") or "INSUFFICIENT_DATA")
+        trend_dir = str(trend.get("direction") or "flat")
+        trend_delta = _safe_float(trend.get("delta_rate_pct"), 0.0)
 
         kind = str(payload.get("report_kind") or "hourly").upper()
         text = (
             f"[Manager {kind}] symbol={symbol} regime={regime} return={ret:.2f}% "
-            f"outlook={label} exp_day={exp_rate:+.2f}% quality={quality:.1f}\n{report_output.summary}"
+            f"outlook={label} exp_day={exp_rate:+.2f}% quality={quality:.1f} trend7={trend_dir}({trend_delta:+.2f}%)\n{report_output.summary}"
         )
         try:
             resp = requests.post(
