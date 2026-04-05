@@ -1385,6 +1385,8 @@ class ManagerAgent:
         self._tuning_pending_signature = ""
         self._tuning_pending_count = 0
         self._tuning_required_confirmations = 2
+        self._tuning_apply_cooldown_cycles = 6
+        self._tuning_cooldown_remaining = 0
 
     def _apply_tuning_decision(
         self,
@@ -1407,12 +1409,6 @@ class ManagerAgent:
             self._tuning_pending_count = 0
             return decision
 
-        if risk_level in {"HIGH", "CRITICAL"}:
-            decision["reason"] = "risk_guard_block"
-            self._tuning_pending_signature = ""
-            self._tuning_pending_count = 0
-            return decision
-
         if confidence < 0.62:
             decision["reason"] = "low_confidence"
             self._tuning_pending_signature = ""
@@ -1427,15 +1423,24 @@ class ManagerAgent:
         }
 
         apply_updates: dict[str, str] = {}
+        tightening = False
         for key, val in proposal.items():
             if key not in current_values:
                 continue
             new_v = _safe_float(val, current_values[key])
             if abs(new_v - current_values[key]) >= 0.005:
                 apply_updates[key] = f"{new_v:.3f}"
+                if key in {"MIN_ENTRY_SCORE", "MIN_ENTRY_MOMENTUM_PCT", "TAKE_PROFIT_PARTIAL_RATIO"} and new_v > current_values[key]:
+                    tightening = True
 
         if not apply_updates:
             decision["reason"] = "no_material_delta"
+            self._tuning_pending_signature = ""
+            self._tuning_pending_count = 0
+            return decision
+
+        if risk_level in {"HIGH", "CRITICAL"} and not tightening:
+            decision["reason"] = "risk_guard_block"
             self._tuning_pending_signature = ""
             self._tuning_pending_count = 0
             return decision
@@ -1452,7 +1457,16 @@ class ManagerAgent:
             decision["reason"] = "await_confirmation"
             decision["pending_count"] = int(self._tuning_pending_count)
             decision["required_count"] = int(self._tuning_required_confirmations)
+            decision["cooldown_remaining"] = int(self._tuning_cooldown_remaining)
             decision["candidate_keys"] = sorted(apply_updates.keys())
+            return decision
+
+        if self._tuning_cooldown_remaining > 0 and risk_level not in {"HIGH", "CRITICAL"}:
+            decision["status"] = "rejected"
+            decision["reason"] = "cooldown_active"
+            decision["pending_count"] = int(self._tuning_pending_count)
+            decision["required_count"] = int(self._tuning_required_confirmations)
+            decision["cooldown_remaining"] = int(self._tuning_cooldown_remaining)
             return decision
 
         try:
@@ -1463,6 +1477,8 @@ class ManagerAgent:
             decision["reason"] = "manager_approved"
             decision["pending_count"] = int(self._tuning_pending_count)
             decision["required_count"] = int(self._tuning_required_confirmations)
+            self._tuning_cooldown_remaining = int(self._tuning_apply_cooldown_cycles)
+            decision["cooldown_remaining"] = int(self._tuning_cooldown_remaining)
             self._tuning_pending_signature = ""
             self._tuning_pending_count = 0
             return decision
@@ -1593,6 +1609,8 @@ class ManagerAgent:
         )
 
         while not stop_event.is_set():
+            if self._tuning_cooldown_remaining > 0:
+                self._tuning_cooldown_remaining -= 1
             outputs: list[AgentOutput] = []
             by_name: dict[str, AgentOutput] = {}
             warmup_triggers = ["startup"] if not prev_vector else []

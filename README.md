@@ -340,6 +340,7 @@ Manager command model:
 - Slack manager reports raise an alert when trend7 flips from `up` to `down` while quality remains weak.
 - Runtime parameter tuning is now agent-suggested and manager-approved automatically; manager applies only when confidence/risk gates pass.
 - Manager now requires 2 consecutive identical tuning suggestions before applying runtime overrides, reducing oscillation.
+- After an auto-apply, manager enters a short cooldown window (cycles) before applying another tune; HIGH/CRITICAL risk can bypass this cooldown.
 - Hourly manager reports are now change-focused: repeated unchanged agent content is suppressed (`no_material_changes` when nothing changed).
 
 Runtime tuning keys (in `.env` or `data/runtime_config.json`):
