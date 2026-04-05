@@ -282,9 +282,13 @@ class ReportingAgent(BaseAgent):
 
     def execute(self, state: BotState, context: dict[str, Any]) -> AgentOutput:
         outputs: list[AgentOutput] = list(context.get("agent_outputs") or [])
+        report_kind = str(context.get("report_kind") or "hourly")
+        triggers = list(context.get("triggers") or [])
         now = datetime.now().isoformat(timespec="seconds")
         snapshot = {
             "timestamp": now,
+            "report_kind": report_kind,
+            "triggers": triggers,
             "state": {
                 "trade_mode": state.trade_mode,
                 "market_regime": state.market_regime,
@@ -309,7 +313,11 @@ class ReportingAgent(BaseAgent):
         self._append_report(snapshot)
 
         one_line = " | ".join(f"{o.agent}:{o.summary}" for o in outputs)
-        summary = f"manager_report ts={now} symbol={state.selected_symbol or '-'} {one_line}".strip()
+        trigger_part = f" triggers={','.join(triggers)}" if triggers else ""
+        summary = (
+            f"manager_report kind={report_kind}{trigger_part} ts={now} "
+            f"symbol={state.selected_symbol or '-'} {one_line}"
+        ).strip()
         return AgentOutput(agent=self.name, summary=summary, payload=snapshot)
 
     def _append_report(self, snapshot: dict[str, Any]) -> None:
@@ -385,7 +393,7 @@ class ManagerSlackNotifier:
         self.webhook_url = str(webhook_url or "").strip()
         self.timeout_sec = max(2.0, float(timeout_sec))
 
-    def send_hourly(self, report_output: AgentOutput) -> None:
+    def send_report(self, report_output: AgentOutput) -> None:
         if not self.enabled:
             return
         if not self.webhook_url:
@@ -398,10 +406,8 @@ class ManagerSlackNotifier:
         regime = str(state.get("market_regime") or "UNKNOWN")
         ret = _safe_float(state.get("total_return_pct"), 0.0)
 
-        text = (
-            f"[Manager Hourly] symbol={symbol} regime={regime} return={ret:.2f}%\n"
-            f"{report_output.summary}"
-        )
+        kind = str(payload.get("report_kind") or "hourly").upper()
+        text = f"[Manager {kind}] symbol={symbol} regime={regime} return={ret:.2f}%\n{report_output.summary}"
         try:
             resp = requests.post(
                 self.webhook_url,
@@ -423,6 +429,7 @@ class ManagerAgent:
         report_path: str = "data/hourly_manager_reports.json",
         slack_enabled: bool = False,
         slack_webhook_url: str = "",
+        event_report_cooldown_seconds: int = 120,
     ) -> None:
         self.report_interval_seconds = max(60, int(report_interval_seconds))
         self.cycle_seconds = max(5, int(cycle_seconds))
@@ -441,9 +448,55 @@ class ManagerAgent:
         self.order_policy_agent = OrderPolicyAgent()
         self.reporting_agent = ReportingAgent(report_path=report_path)
         self.slack_notifier = ManagerSlackNotifier(enabled=slack_enabled, webhook_url=slack_webhook_url)
+        self.event_report_cooldown_seconds = max(10, int(event_report_cooldown_seconds))
+
+    @staticmethod
+    def _extract_event_vector(state: BotState, by_name: dict[str, AgentOutput]) -> dict[str, Any]:
+        market = by_name.get("market_analysis").payload if by_name.get("market_analysis") else {}
+        invest = by_name.get("investment_strategy").payload if by_name.get("investment_strategy") else {}
+        risk = by_name.get("risk_guard").payload if by_name.get("risk_guard") else {}
+        alloc = by_name.get("capital_allocation").payload if by_name.get("capital_allocation") else {}
+        policy = by_name.get("order_policy").payload if by_name.get("order_policy") else {}
+        weights = dict(alloc.get("weights") or {})
+        return {
+            "symbol": str(state.selected_symbol or ""),
+            "regime": str(market.get("regime") or "UNKNOWN"),
+            "phase": str(market.get("phase") or "OFF_HOURS"),
+            "risk_level": str(risk.get("risk_level") or "LOW"),
+            "policy": str(policy.get("policy") or "ALLOW"),
+            "policy_reason": str(policy.get("reason") or ""),
+            "action_hint": str(invest.get("action_hint") or "HOLD"),
+            "trend_w": round(_safe_float(weights.get("trend"), 0.0), 2),
+            "scalp_w": round(_safe_float(weights.get("scalping"), 0.0), 2),
+            "def_w": round(_safe_float(weights.get("defensive"), 0.0), 2),
+        }
+
+    @staticmethod
+    def _diff_triggers(prev_vector: dict[str, Any], curr_vector: dict[str, Any]) -> list[str]:
+        if not prev_vector:
+            return ["startup"]
+        mapping = {
+            "symbol": "symbol_change",
+            "regime": "regime_change",
+            "phase": "phase_change",
+            "risk_level": "risk_change",
+            "policy": "policy_change",
+            "policy_reason": "policy_reason_change",
+            "action_hint": "action_hint_change",
+            "trend_w": "allocation_change",
+            "scalp_w": "allocation_change",
+            "def_w": "allocation_change",
+        }
+        triggers: list[str] = []
+        for key, trigger in mapping.items():
+            if prev_vector.get(key) != curr_vector.get(key) and trigger not in triggers:
+                triggers.append(trigger)
+        return triggers
 
     def run(self, stop_event: threading.Event, state: BotState, bot_thread: threading.Thread) -> None:
         next_report_at = time.time()
+        last_event_report_at = 0.0
+        prev_vector: dict[str, Any] = {}
         logging.info(
             "MANAGER_AGENT online cycle=%ss report_interval=%ss",
             self.cycle_seconds,
@@ -502,10 +555,26 @@ class ManagerAgent:
             outputs.append(policy_output)
             by_name[policy_output.agent] = policy_output
 
+            curr_vector = self._extract_event_vector(state, by_name)
+            triggers = self._diff_triggers(prev_vector, curr_vector)
+            if triggers:
+                logging.info("MANAGER_EVENT triggers=%s vector=%s", ",".join(triggers), curr_vector)
+                if (time.time() - last_event_report_at) >= self.event_report_cooldown_seconds:
+                    event_report = self.reporting_agent.execute(
+                        state,
+                        {"agent_outputs": outputs, "report_kind": "event", "triggers": triggers},
+                    )
+                    self.slack_notifier.send_report(event_report)
+                    last_event_report_at = time.time()
+            prev_vector = curr_vector
+
             if time.time() >= next_report_at:
-                report_output = self.reporting_agent.execute(state, {"agent_outputs": outputs})
+                report_output = self.reporting_agent.execute(
+                    state,
+                    {"agent_outputs": outputs, "report_kind": "hourly", "triggers": []},
+                )
                 logging.info("MANAGER_HOURLY_REPORT %s", report_output.summary)
-                self.slack_notifier.send_hourly(report_output)
+                self.slack_notifier.send_report(report_output)
                 next_report_at = time.time() + self.report_interval_seconds
 
             if (not bot_thread.is_alive()) and state.last_error:
@@ -524,6 +593,7 @@ def run_ai_company(
     report_path: str = "data/hourly_manager_reports.json",
     manager_slack_enabled: bool = False,
     manager_slack_webhook_url: str = "",
+    event_report_cooldown_seconds: int = 120,
 ) -> None:
     bot_thread = threading.Thread(target=run_bot, args=(stop_event, state), daemon=True, name="bot-runtime")
     bot_thread.start()
@@ -534,6 +604,7 @@ def run_ai_company(
         report_path=report_path,
         slack_enabled=manager_slack_enabled,
         slack_webhook_url=manager_slack_webhook_url,
+        event_report_cooldown_seconds=event_report_cooldown_seconds,
     )
     manager.run(stop_event, state, bot_thread)
 

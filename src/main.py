@@ -34,6 +34,7 @@ def run(
     manager_report_path: str = "data/hourly_manager_reports.json",
     manager_slack_enabled: bool = False,
     manager_slack_webhook_url: str = "",
+    manager_event_cooldown_seconds: int = 120,
 ) -> None:
     """Run the trading bot with optional CLI dashboard.
     
@@ -68,6 +69,7 @@ def run(
                 report_path=manager_report_path,
                 manager_slack_enabled=manager_slack_enabled,
                 manager_slack_webhook_url=manager_slack_webhook_url,
+                event_report_cooldown_seconds=max(10, int(manager_event_cooldown_seconds)),
             )
         else:
             run_bot(stop_event, state)
@@ -129,6 +131,12 @@ def main() -> None:
         help="Path to store manager reports JSON"
     )
     parser.add_argument(
+        "--manager-event-cooldown-seconds",
+        type=int,
+        default=120,
+        help="Minimum seconds between event-driven manager reports (default: 120)"
+    )
+    parser.add_argument(
         "--manager-slack",
         action="store_true",
         help="Send manager hourly reports to Slack webhook"
@@ -153,6 +161,7 @@ def main() -> None:
             manager_report_path=args.manager_report_path,
             manager_slack_enabled=manager_slack_enabled,
             manager_slack_webhook_url=manager_slack_webhook,
+            manager_event_cooldown_seconds=args.manager_event_cooldown_seconds,
         )
     except RuntimeError as exc:
         logging.error("Run failed: %s", exc)

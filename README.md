@@ -304,6 +304,17 @@ python main.py --ai-company --manager-slack --manager-slack-webhook https://hook
 
 Hourly reports are saved to `data/hourly_manager_reports.json` (change with `--manager-report-path`).
 
+Manager communication mode is hybrid:
+
+- Regular: full agent coordination every manager cycle (`--manager-cycle-seconds`)
+- Event-driven: immediate manager report when key signals change (regime/risk/policy/allocation/symbol)
+
+Tune event cadence:
+
+```bash
+python main.py --ai-company --manager-event-cooldown-seconds 60
+```
+
 ### Quick Start
 
 ```bash
