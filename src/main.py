@@ -7,6 +7,7 @@ import threading
 from pathlib import Path
 
 from bot_runtime import BotState, run_bot
+from config import load_settings
 from cli_dashboard import create_dashboard, RICH_AVAILABLE
 from ai_company import run_ai_company
 
@@ -31,6 +32,8 @@ def run(
     manager_report_minutes: int = 60,
     manager_cycle_seconds: int = 20,
     manager_report_path: str = "data/hourly_manager_reports.json",
+    manager_slack_enabled: bool = False,
+    manager_slack_webhook_url: str = "",
 ) -> None:
     """Run the trading bot with optional CLI dashboard.
     
@@ -63,6 +66,8 @@ def run(
                 report_interval_seconds=max(60, int(manager_report_minutes) * 60),
                 cycle_seconds=max(5, int(manager_cycle_seconds)),
                 report_path=manager_report_path,
+                manager_slack_enabled=manager_slack_enabled,
+                manager_slack_webhook_url=manager_slack_webhook_url,
             )
         else:
             run_bot(stop_event, state)
@@ -123,8 +128,21 @@ def main() -> None:
         default="data/hourly_manager_reports.json",
         help="Path to store manager reports JSON"
     )
+    parser.add_argument(
+        "--manager-slack",
+        action="store_true",
+        help="Send manager hourly reports to Slack webhook"
+    )
+    parser.add_argument(
+        "--manager-slack-webhook",
+        default="",
+        help="Override Slack webhook URL for manager reports"
+    )
     
     args = parser.parse_args()
+    settings = load_settings()
+    manager_slack_webhook = str(args.manager_slack_webhook or "").strip() or str(getattr(settings, "slack_webhook_url", "") or "").strip()
+    manager_slack_enabled = bool(args.manager_slack) or (bool(getattr(settings, "slack_enabled", False)) and bool(manager_slack_webhook))
     try:
         run(
             enable_dashboard=args.dashboard,
@@ -133,6 +151,8 @@ def main() -> None:
             manager_report_minutes=args.manager_report_minutes,
             manager_cycle_seconds=args.manager_cycle_seconds,
             manager_report_path=args.manager_report_path,
+            manager_slack_enabled=manager_slack_enabled,
+            manager_slack_webhook_url=manager_slack_webhook,
         )
     except RuntimeError as exc:
         logging.error("Run failed: %s", exc)

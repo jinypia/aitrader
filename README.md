@@ -281,8 +281,10 @@ Hierarchy (recommended):
 - Trend Invest Agent: manages trend-following allocation slice
 - Scalping Invest Agent: manages short-horizon allocation slice
 - Defensive Invest Agent: manages cash/hedge allocation slice
+- Order Policy Agent: converts consensus/risk into ALLOW/BLOCK and order-limit factor
 - Execution Agent: monitors runtime health and detects startup/runtime failures
 - Reporting Agent: writes structured manager reports to JSON and log stream
+- Manager Slack Notifier: sends each hourly manager report to Slack
 
 Run it:
 
@@ -292,6 +294,12 @@ python main.py --ai-company --dashboard
 
 # Custom cadence (example: report every 30 minutes)
 python main.py --ai-company --manager-report-minutes 30 --manager-cycle-seconds 15
+
+# Push hourly manager reports to Slack
+python main.py --ai-company --manager-slack
+
+# Use a dedicated manager-report webhook
+python main.py --ai-company --manager-slack --manager-slack-webhook https://hooks.slack.com/services/...
 ```
 
 Hourly reports are saved to `data/hourly_manager_reports.json` (change with `--manager-report-path`).

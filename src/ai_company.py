@@ -9,6 +9,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import requests
+
 from bot_runtime import BotState, run_bot
 
 
@@ -324,6 +326,94 @@ class ReportingAgent(BaseAgent):
         self.report_path.write_text(json.dumps(existing[-500:], ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+class OrderPolicyAgent(BaseAgent):
+    name = "order_policy"
+
+    def execute(self, state: BotState, context: dict[str, Any]) -> AgentOutput:
+        by_name: dict[str, AgentOutput] = dict(context.get("by_name") or {})
+        risk_payload = (by_name.get("risk_guard").payload if by_name.get("risk_guard") else {})
+        alloc_payload = (by_name.get("capital_allocation").payload if by_name.get("capital_allocation") else {})
+        trend_payload = (by_name.get("invest_trend").payload if by_name.get("invest_trend") else {})
+        scalping_payload = (by_name.get("invest_scalping").payload if by_name.get("invest_scalping") else {})
+        defensive_payload = (by_name.get("invest_defensive").payload if by_name.get("invest_defensive") else {})
+
+        risk_level = str(risk_payload.get("risk_level", "LOW"))
+        alloc_weights = dict(alloc_payload.get("weights") or {})
+        trend_signal = str(trend_payload.get("signal", "WAIT"))
+        scalping_signal = str(scalping_payload.get("signal", "STANDBY"))
+        defensive_posture = str(defensive_payload.get("posture", "BUFFER"))
+
+        allow = True
+        order_limit_factor = 1.0
+        reason = "consensus_ok"
+
+        if risk_level == "CRITICAL":
+            allow = False
+            order_limit_factor = 0.0
+            reason = "risk_critical"
+        elif risk_level == "HIGH":
+            allow = True
+            order_limit_factor = 0.4
+            reason = "risk_high_reduce"
+        elif trend_signal == "WAIT" and scalping_signal == "STANDBY":
+            allow = False
+            order_limit_factor = 0.0
+            reason = "no_entry_consensus"
+        elif defensive_posture == "HEDGE" and _safe_float(alloc_weights.get("defensive", 0.0), 0.0) >= 0.7:
+            allow = True
+            order_limit_factor = 0.3
+            reason = "defensive_bias"
+
+        policy = "ALLOW" if allow else "BLOCK"
+        summary = f"policy={policy} limit_factor={order_limit_factor:.2f} reason={reason}"
+        return AgentOutput(
+            agent=self.name,
+            summary=summary,
+            payload={
+                "policy": policy,
+                "allow_new_orders": allow,
+                "order_limit_factor": order_limit_factor,
+                "reason": reason,
+                "risk_level": risk_level,
+            },
+        )
+
+
+class ManagerSlackNotifier:
+    def __init__(self, enabled: bool, webhook_url: str, timeout_sec: float = 6.0) -> None:
+        self.enabled = bool(enabled)
+        self.webhook_url = str(webhook_url or "").strip()
+        self.timeout_sec = max(2.0, float(timeout_sec))
+
+    def send_hourly(self, report_output: AgentOutput) -> None:
+        if not self.enabled:
+            return
+        if not self.webhook_url:
+            logging.warning("MANAGER_SLACK disabled: missing webhook URL")
+            return
+
+        payload = report_output.payload if isinstance(report_output.payload, dict) else {}
+        state = payload.get("state") if isinstance(payload.get("state"), dict) else {}
+        symbol = str(state.get("selected_symbol") or "-")
+        regime = str(state.get("market_regime") or "UNKNOWN")
+        ret = _safe_float(state.get("total_return_pct"), 0.0)
+
+        text = (
+            f"[Manager Hourly] symbol={symbol} regime={regime} return={ret:.2f}%\n"
+            f"{report_output.summary}"
+        )
+        try:
+            resp = requests.post(
+                self.webhook_url,
+                json={"text": text},
+                timeout=self.timeout_sec,
+            )
+            if resp.status_code >= 300:
+                logging.warning("MANAGER_SLACK failed status=%s body=%s", resp.status_code, (resp.text or "")[:180])
+        except Exception as exc:
+            logging.warning("MANAGER_SLACK error: %s", exc)
+
+
 class ManagerAgent:
     def __init__(
         self,
@@ -331,6 +421,8 @@ class ManagerAgent:
         report_interval_seconds: int = 3600,
         cycle_seconds: int = 20,
         report_path: str = "data/hourly_manager_reports.json",
+        slack_enabled: bool = False,
+        slack_webhook_url: str = "",
     ) -> None:
         self.report_interval_seconds = max(60, int(report_interval_seconds))
         self.cycle_seconds = max(5, int(cycle_seconds))
@@ -346,7 +438,9 @@ class ManagerAgent:
             ScalpingInvestAgent(),
             DefensiveInvestAgent(),
         ]
+        self.order_policy_agent = OrderPolicyAgent()
         self.reporting_agent = ReportingAgent(report_path=report_path)
+        self.slack_notifier = ManagerSlackNotifier(enabled=slack_enabled, webhook_url=slack_webhook_url)
 
     def run(self, stop_event: threading.Event, state: BotState, bot_thread: threading.Thread) -> None:
         next_report_at = time.time()
@@ -397,9 +491,21 @@ class ManagerAgent:
                 outputs.append(output)
                 by_name[output.agent] = output
 
+            try:
+                policy_output = self.order_policy_agent.execute(state, {"by_name": by_name, "bot_thread": bot_thread})
+            except Exception as exc:
+                policy_output = AgentOutput(
+                    agent=self.order_policy_agent.name,
+                    summary=f"error={exc}",
+                    payload={"error": str(exc)},
+                )
+            outputs.append(policy_output)
+            by_name[policy_output.agent] = policy_output
+
             if time.time() >= next_report_at:
                 report_output = self.reporting_agent.execute(state, {"agent_outputs": outputs})
                 logging.info("MANAGER_HOURLY_REPORT %s", report_output.summary)
+                self.slack_notifier.send_hourly(report_output)
                 next_report_at = time.time() + self.report_interval_seconds
 
             if (not bot_thread.is_alive()) and state.last_error:
@@ -416,6 +522,8 @@ def run_ai_company(
     report_interval_seconds: int = 3600,
     cycle_seconds: int = 20,
     report_path: str = "data/hourly_manager_reports.json",
+    manager_slack_enabled: bool = False,
+    manager_slack_webhook_url: str = "",
 ) -> None:
     bot_thread = threading.Thread(target=run_bot, args=(stop_event, state), daemon=True, name="bot-runtime")
     bot_thread.start()
@@ -424,6 +532,8 @@ def run_ai_company(
         report_interval_seconds=report_interval_seconds,
         cycle_seconds=cycle_seconds,
         report_path=report_path,
+        slack_enabled=manager_slack_enabled,
+        slack_webhook_url=manager_slack_webhook_url,
     )
     manager.run(stop_event, state, bot_thread)
 
