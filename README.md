@@ -321,6 +321,7 @@ Manager command model:
   - `last_processed_trade_index`
   - `sleeve_realized_totals`
   - cycle-level `sleeve_realized_delta`
+- Runtime now writes explicit `ai_sleeve` tags on fills (`trend`/`scalping`/`defensive`) to improve attribution accuracy.
 
 Tune event cadence:
 

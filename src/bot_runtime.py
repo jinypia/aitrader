@@ -1724,6 +1724,26 @@ def _apply_fill(
     return {"ok": False, "reason": f"unsupported side={side}"}
 
 
+def _infer_ai_sleeve(entry_mode: str, setup_state: str, strategy_mode: str = "") -> str:
+    mode = str(strategy_mode or "").strip().upper()
+    if mode == "SCALPING":
+        return "scalping"
+
+    merged = " ".join(
+        [
+            str(entry_mode or ""),
+            str(setup_state or ""),
+            str(strategy_mode or ""),
+        ]
+    ).upper()
+
+    if "SCALP" in merged:
+        return "scalping"
+    if any(key in merged for key in ["DEFENSIVE", "RISK_OFF", "BEARISH", "CAPITAL_PRESERVATION"]):
+        return "defensive"
+    return "trend"
+
+
 def _period_return(equity_history: list[dict], current_equity: float, days: int) -> float:
     if not equity_history:
         return 0.0
@@ -4668,6 +4688,11 @@ def run_bot(stop_event: threading.Event, state: BotState) -> None:
                     order_id = _mk_order_id()
                     qty_before = qty
                     expected_qty_after = qty_before + order_qty if action == "BUY" else max(0, qty_before - order_qty)
+                    ai_sleeve = _infer_ai_sleeve(
+                        entry_mode=symbol_entry_mode,
+                        setup_state=symbol_setup_state,
+                        strategy_mode=str(getattr(settings, "strategy_mode", "")),
+                    )
                     order_entry: dict[str, object] = {
                         "id": order_id,
                         "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -4676,6 +4701,7 @@ def run_bot(stop_event: threading.Event, state: BotState) -> None:
                         "qty": int(order_qty),
                         "price": round(float(current_price), 4),
                         "mode": settings.trade_mode,
+                        "ai_sleeve": ai_sleeve,
                         "status": "REQUESTED",
                         "detail": "",
                     }
@@ -4702,7 +4728,10 @@ def run_bot(stop_event: threading.Event, state: BotState) -> None:
                             regime=regime,
                             entry_mode=symbol_entry_mode,
                             setup_state=symbol_setup_state,
-                            tags={"a_grade_opening": bool(is_a_grade_opening)},
+                            tags={
+                                "a_grade_opening": bool(is_a_grade_opening),
+                                "ai_sleeve": ai_sleeve,
+                            },
                         )
                         order_ok = bool(sim.get("ok"))
                         if order_ok:
@@ -4764,7 +4793,10 @@ def run_bot(stop_event: threading.Event, state: BotState) -> None:
                                 regime=regime,
                                 entry_mode=symbol_entry_mode,
                                 setup_state=symbol_setup_state,
-                                tags={"a_grade_opening": bool(is_a_grade_opening)},
+                                tags={
+                                    "a_grade_opening": bool(is_a_grade_opening),
+                                    "ai_sleeve": ai_sleeve,
+                                },
                             )
                             order_ok = bool(fill.get("ok"))
                             if order_ok:
