@@ -39,10 +39,20 @@ class BaseAgent:
         raise NotImplementedError
 
 
+def _manager_order(context: dict[str, Any], agent_name: str, default: str) -> str:
+    orders = context.get("work_orders")
+    if isinstance(orders, dict):
+        value = orders.get(agent_name)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return default
+
+
 class MarketAnalysisAgent(BaseAgent):
     name = "market_analysis"
 
     def execute(self, state: BotState, context: dict[str, Any]) -> AgentOutput:
+        manager_order = _manager_order(context, self.name, "Re-evaluate regime and market-flow quality.")
         regime = str(state.market_regime or "UNKNOWN")
         confidence = _safe_float(state.regime_confidence, 0.0)
         phase = str(state.session_phase or "OFF_HOURS")
@@ -50,8 +60,9 @@ class MarketAnalysisAgent(BaseAgent):
         summary = f"regime={regime} conf={confidence:.2f} phase={phase}"
         return AgentOutput(
             agent=self.name,
-            summary=summary,
+            summary=f"{summary} order=active",
             payload={
+                "manager_order": manager_order,
                 "regime": regime,
                 "confidence": confidence,
                 "phase": phase,
@@ -65,6 +76,11 @@ class InvestmentStrategyAgent(BaseAgent):
     name = "investment_strategy"
 
     def execute(self, state: BotState, context: dict[str, Any]) -> AgentOutput:
+        manager_order = _manager_order(
+            context,
+            self.name,
+            "Refresh action hint for best risk-adjusted return.",
+        )
         mode = str(state.trade_mode or "DRY").upper()
         profile = str(state.session_profile or "CAPITAL_PRESERVATION")
         selected_symbol = str(state.selected_symbol or "")
@@ -77,8 +93,9 @@ class InvestmentStrategyAgent(BaseAgent):
         summary = f"mode={mode} profile={profile} action_hint={action_hint}"
         return AgentOutput(
             agent=self.name,
-            summary=summary,
+            summary=f"{summary} order=active",
             payload={
+                "manager_order": manager_order,
                 "trade_mode": mode,
                 "session_profile": profile,
                 "selected_symbol": selected_symbol,
@@ -93,6 +110,7 @@ class RiskGuardAgent(BaseAgent):
     name = "risk_guard"
 
     def execute(self, state: BotState, context: dict[str, Any]) -> AgentOutput:
+        manager_order = _manager_order(context, self.name, "Stress-check risk controls and halt conditions.")
         heat = _safe_float(state.portfolio_heat_pct, 0.0)
         max_heat = _safe_float(state.max_portfolio_heat_pct, 0.0)
         stale = bool(state.stale_data_active)
@@ -109,8 +127,9 @@ class RiskGuardAgent(BaseAgent):
         summary = f"risk={risk_level} heat={heat:.1f}% stale={stale} halt={halt}"
         return AgentOutput(
             agent=self.name,
-            summary=summary,
+            summary=f"{summary} order=active",
             payload={
+                "manager_order": manager_order,
                 "risk_level": risk_level,
                 "portfolio_heat_pct": heat,
                 "max_portfolio_heat_pct": max_heat,
@@ -126,6 +145,11 @@ class CapitalAllocationAgent(BaseAgent):
     name = "capital_allocation"
 
     def execute(self, state: BotState, context: dict[str, Any]) -> AgentOutput:
+        manager_order = _manager_order(
+            context,
+            self.name,
+            "Rebalance strategy sleeves toward highest expected return under risk limits.",
+        )
         by_name: dict[str, AgentOutput] = dict(context.get("by_name") or {})
         risk_payload = (by_name.get("risk_guard").payload if by_name.get("risk_guard") else {})
         market_payload = (by_name.get("market_analysis").payload if by_name.get("market_analysis") else {})
@@ -164,8 +188,9 @@ class CapitalAllocationAgent(BaseAgent):
         summary = "alloc trend={trend:.0%} scalp={scalping:.0%} def={defensive:.0%}".format(**weights)
         return AgentOutput(
             agent=self.name,
-            summary=summary,
+            summary=f"{summary} order=active",
             payload={
+                "manager_order": manager_order,
                 "weights": weights,
                 "risk_level": risk_level,
                 "regime": regime,
@@ -179,6 +204,11 @@ class TrendInvestAgent(BaseAgent):
     name = "invest_trend"
 
     def execute(self, state: BotState, context: dict[str, Any]) -> AgentOutput:
+        manager_order = _manager_order(
+            context,
+            self.name,
+            "Seek trend continuation entries with strict quality threshold.",
+        )
         by_name: dict[str, AgentOutput] = dict(context.get("by_name") or {})
         alloc = (by_name.get("capital_allocation").payload if by_name.get("capital_allocation") else {})
         weights = dict(alloc.get("weights") or {})
@@ -188,8 +218,9 @@ class TrendInvestAgent(BaseAgent):
         summary = f"signal={signal} budget={budget:.0%} score={score:.2f}"
         return AgentOutput(
             agent=self.name,
-            summary=summary,
+            summary=f"{summary} order=active",
             payload={
+                "manager_order": manager_order,
                 "signal": signal,
                 "budget_weight": budget,
                 "selection_score": score,
@@ -202,6 +233,11 @@ class ScalpingInvestAgent(BaseAgent):
     name = "invest_scalping"
 
     def execute(self, state: BotState, context: dict[str, Any]) -> AgentOutput:
+        manager_order = _manager_order(
+            context,
+            self.name,
+            "Exploit short-horizon opportunities only when risk permits.",
+        )
         by_name: dict[str, AgentOutput] = dict(context.get("by_name") or {})
         alloc = (by_name.get("capital_allocation").payload if by_name.get("capital_allocation") else {})
         risk = (by_name.get("risk_guard").payload if by_name.get("risk_guard") else {})
@@ -212,8 +248,9 @@ class ScalpingInvestAgent(BaseAgent):
         summary = f"signal={signal} budget={budget:.0%} risk={risk_level}"
         return AgentOutput(
             agent=self.name,
-            summary=summary,
+            summary=f"{summary} order=active",
             payload={
+                "manager_order": manager_order,
                 "signal": signal,
                 "budget_weight": budget,
                 "risk_level": risk_level,
@@ -226,6 +263,11 @@ class DefensiveInvestAgent(BaseAgent):
     name = "invest_defensive"
 
     def execute(self, state: BotState, context: dict[str, Any]) -> AgentOutput:
+        manager_order = _manager_order(
+            context,
+            self.name,
+            "Preserve capital and hedge downside during elevated risk.",
+        )
         by_name: dict[str, AgentOutput] = dict(context.get("by_name") or {})
         alloc = (by_name.get("capital_allocation").payload if by_name.get("capital_allocation") else {})
         risk = (by_name.get("risk_guard").payload if by_name.get("risk_guard") else {})
@@ -236,8 +278,9 @@ class DefensiveInvestAgent(BaseAgent):
         summary = f"posture={posture} budget={budget:.0%} risk={risk_level}"
         return AgentOutput(
             agent=self.name,
-            summary=summary,
+            summary=f"{summary} order=active",
             payload={
+                "manager_order": manager_order,
                 "posture": posture,
                 "budget_weight": budget,
                 "risk_level": risk_level,
@@ -250,6 +293,7 @@ class ExecutionAgent(BaseAgent):
     name = "execution"
 
     def execute(self, state: BotState, context: dict[str, Any]) -> AgentOutput:
+        manager_order = _manager_order(context, self.name, "Maintain runtime health and execution continuity.")
         bot_thread: threading.Thread | None = context.get("bot_thread")
         alive = bool(bot_thread and bot_thread.is_alive())
         running = bool(state.running)
@@ -262,8 +306,9 @@ class ExecutionAgent(BaseAgent):
         summary = f"health={health} running={running} thread_alive={alive} loops={loop_count}"
         return AgentOutput(
             agent=self.name,
-            summary=summary,
+            summary=f"{summary} order=active",
             payload={
+                "manager_order": manager_order,
                 "health": health,
                 "thread_alive": alive,
                 "running": running,
@@ -338,6 +383,11 @@ class OrderPolicyAgent(BaseAgent):
     name = "order_policy"
 
     def execute(self, state: BotState, context: dict[str, Any]) -> AgentOutput:
+        manager_order = _manager_order(
+            context,
+            self.name,
+            "Gate new orders to maximize risk-adjusted profit and avoid bad entries.",
+        )
         by_name: dict[str, AgentOutput] = dict(context.get("by_name") or {})
         risk_payload = (by_name.get("risk_guard").payload if by_name.get("risk_guard") else {})
         alloc_payload = (by_name.get("capital_allocation").payload if by_name.get("capital_allocation") else {})
@@ -376,8 +426,9 @@ class OrderPolicyAgent(BaseAgent):
         summary = f"policy={policy} limit_factor={order_limit_factor:.2f} reason={reason}"
         return AgentOutput(
             agent=self.name,
-            summary=summary,
+            summary=f"{summary} order=active",
             payload={
+                "manager_order": manager_order,
                 "policy": policy,
                 "allow_new_orders": allow,
                 "order_limit_factor": order_limit_factor,
@@ -451,6 +502,29 @@ class ManagerAgent:
         self.event_report_cooldown_seconds = max(10, int(event_report_cooldown_seconds))
 
     @staticmethod
+    def _build_work_orders(state: BotState, prev_vector: dict[str, Any], triggers: list[str]) -> dict[str, str]:
+        urgency = "normal"
+        risk_level = str(prev_vector.get("risk_level") or "LOW")
+        if risk_level in {"HIGH", "CRITICAL"} or ("risk_change" in triggers):
+            urgency = "high"
+        if "policy_change" in triggers:
+            urgency = "high"
+
+        prefix = f"[{urgency}]"
+        symbol = str(state.selected_symbol or "current_target")
+        return {
+            "market_analysis": f"{prefix} Refresh regime/flow for {symbol} and detect edge shifts.",
+            "investment_strategy": f"{prefix} Update action hint targeting higher expected return with controlled risk.",
+            "risk_guard": f"{prefix} Re-check heat, stale data, and halt guards before next decisions.",
+            "execution": f"{prefix} Keep runtime healthy and report execution degradation immediately.",
+            "capital_allocation": f"{prefix} Rebalance trend/scalping/defensive sleeves for risk-adjusted performance.",
+            "invest_trend": f"{prefix} Focus on quality trend setups; avoid weak momentum entries.",
+            "invest_scalping": f"{prefix} Hunt short-horizon trades only when spread/risk profile is acceptable.",
+            "invest_defensive": f"{prefix} Preserve capital and maintain downside buffer during stress.",
+            "order_policy": f"{prefix} Enforce ALLOW/BLOCK gate to avoid low-conviction or high-risk orders.",
+        }
+
+    @staticmethod
     def _extract_event_vector(state: BotState, by_name: dict[str, AgentOutput]) -> dict[str, Any]:
         market = by_name.get("market_analysis").payload if by_name.get("market_analysis") else {}
         invest = by_name.get("investment_strategy").payload if by_name.get("investment_strategy") else {}
@@ -506,7 +580,13 @@ class ManagerAgent:
         while not stop_event.is_set():
             outputs: list[AgentOutput] = []
             by_name: dict[str, AgentOutput] = {}
-            base_context: dict[str, Any] = {"bot_thread": bot_thread, "by_name": by_name}
+            warmup_triggers = ["startup"] if not prev_vector else []
+            work_orders = self._build_work_orders(state, prev_vector, warmup_triggers)
+            base_context: dict[str, Any] = {
+                "bot_thread": bot_thread,
+                "by_name": by_name,
+                "work_orders": work_orders,
+            }
 
             for agent in self.core_agents:
                 try:
@@ -521,7 +601,10 @@ class ManagerAgent:
                 by_name[output.agent] = output
 
             try:
-                alloc_output = self.capital_agent.execute(state, {"by_name": by_name, "bot_thread": bot_thread})
+                alloc_output = self.capital_agent.execute(
+                    state,
+                    {"by_name": by_name, "bot_thread": bot_thread, "work_orders": work_orders},
+                )
             except Exception as exc:
                 alloc_output = AgentOutput(
                     agent=self.capital_agent.name,
@@ -531,7 +614,11 @@ class ManagerAgent:
             outputs.append(alloc_output)
             by_name[alloc_output.agent] = alloc_output
 
-            invest_context: dict[str, Any] = {"bot_thread": bot_thread, "by_name": by_name}
+            invest_context: dict[str, Any] = {
+                "bot_thread": bot_thread,
+                "by_name": by_name,
+                "work_orders": work_orders,
+            }
             for agent in self.invest_agents:
                 try:
                     output = agent.execute(state, invest_context)
@@ -545,7 +632,10 @@ class ManagerAgent:
                 by_name[output.agent] = output
 
             try:
-                policy_output = self.order_policy_agent.execute(state, {"by_name": by_name, "bot_thread": bot_thread})
+                policy_output = self.order_policy_agent.execute(
+                    state,
+                    {"by_name": by_name, "bot_thread": bot_thread, "work_orders": work_orders},
+                )
             except Exception as exc:
                 policy_output = AgentOutput(
                     agent=self.order_policy_agent.name,

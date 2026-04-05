@@ -309,6 +309,12 @@ Manager communication mode is hybrid:
 - Regular: full agent coordination every manager cycle (`--manager-cycle-seconds`)
 - Event-driven: immediate manager report when key signals change (regime/risk/policy/allocation/symbol)
 
+Manager command model:
+
+- On every cycle, the manager issues purpose-specific work orders to each agent.
+- Agents acknowledge manager directives in their payload (`manager_order`) and execute with role-specific logic.
+- When important signals change, manager raises urgency and updates directives before the next decision/report.
+
 Tune event cadence:
 
 ```bash
