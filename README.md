@@ -317,6 +317,10 @@ Manager command model:
 - When important signals change, manager raises urgency and updates directives before the next decision/report.
 - Learning state is persisted in `data/manager_learning_state.json` and used to tune allocation bias.
 - Learning updates are driven by realized-trade outcomes (`state.realized_pnl` delta) with fill activity attribution.
+- Sleeve-specific realized attribution is tracked from `data/ledger.json` SELL trades and persisted as:
+  - `last_processed_trade_index`
+  - `sleeve_realized_totals`
+  - cycle-level `sleeve_realized_delta`
 
 Tune event cadence:
 

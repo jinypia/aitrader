@@ -49,8 +49,13 @@ def _manager_order(context: dict[str, Any], agent_name: str, default: str) -> st
 
 
 class ManagerLearningStore:
-    def __init__(self, path: str = "data/manager_learning_state.json") -> None:
+    def __init__(
+        self,
+        path: str = "data/manager_learning_state.json",
+        ledger_path: str = "data/ledger.json",
+    ) -> None:
         self.path = Path(path)
+        self.ledger_path = Path(ledger_path)
         self._cache = self._load()
 
     def _default_state(self) -> dict[str, Any]:
@@ -62,6 +67,12 @@ class ManagerLearningStore:
             },
             "last_total_return_pct": 0.0,
             "last_realized_pnl": 0.0,
+            "last_processed_trade_index": 0,
+            "sleeve_realized_totals": {
+                "trend": 0.0,
+                "scalping": 0.0,
+                "defensive": 0.0,
+            },
             "updated_at": datetime.now().isoformat(timespec="seconds"),
         }
 
@@ -94,6 +105,94 @@ class ManagerLearningStore:
             "defensive": _safe_float(raw.get("defensive"), 1.0),
         }
 
+    @staticmethod
+    def _detect_sleeve(row: dict[str, Any]) -> str:
+        explicit = str(row.get("ai_sleeve") or "").strip().lower()
+        if explicit in {"trend", "scalping", "defensive"}:
+            return explicit
+
+        merged = " ".join(
+            [
+                str(row.get("entry_mode") or ""),
+                str(row.get("strategy_profile") or ""),
+                str(row.get("setup_state") or ""),
+                str(row.get("sentiment_class") or ""),
+            ]
+        ).upper()
+
+        if "SCALP" in merged:
+            return "scalping"
+        if any(key in merged for key in ["DEFENSIVE", "RISK_OFF", "BEARISH", "CAPITAL_PRESERVATION"]):
+            return "defensive"
+        return "trend"
+
+    def _collect_sleeve_realized_delta(self) -> dict[str, Any]:
+        totals = {
+            "trend": 0.0,
+            "scalping": 0.0,
+            "defensive": 0.0,
+        }
+        delta = {
+            "trend": 0.0,
+            "scalping": 0.0,
+            "defensive": 0.0,
+        }
+        start_idx = int(_safe_float(self._cache.get("last_processed_trade_index"), 0.0))
+        end_idx = start_idx
+
+        try:
+            if not self.ledger_path.exists():
+                return {
+                    "totals": totals,
+                    "delta": delta,
+                    "new_sells": 0,
+                    "start_idx": start_idx,
+                    "end_idx": end_idx,
+                }
+
+            payload = json.loads(self.ledger_path.read_text(encoding="utf-8"))
+            trades = list(payload.get("trades") or []) if isinstance(payload, dict) else []
+            end_idx = len(trades)
+
+            for row in trades:
+                if not isinstance(row, dict):
+                    continue
+                if str(row.get("side") or "") != "SELL":
+                    continue
+                sleeve = self._detect_sleeve(row)
+                pnl = _safe_float(row.get("realized_pnl"), 0.0)
+                if sleeve in totals:
+                    totals[sleeve] += pnl
+
+            new_rows = trades[start_idx:]
+            new_sell_count = 0
+            for row in new_rows:
+                if not isinstance(row, dict):
+                    continue
+                if str(row.get("side") or "") != "SELL":
+                    continue
+                new_sell_count += 1
+                sleeve = self._detect_sleeve(row)
+                pnl = _safe_float(row.get("realized_pnl"), 0.0)
+                if sleeve in delta:
+                    delta[sleeve] += pnl
+
+            return {
+                "totals": totals,
+                "delta": delta,
+                "new_sells": int(new_sell_count),
+                "start_idx": start_idx,
+                "end_idx": end_idx,
+            }
+        except Exception:
+            return {
+                "totals": totals,
+                "delta": delta,
+                "new_sells": 0,
+                "start_idx": start_idx,
+                "end_idx": end_idx,
+            }
+
     def update_from_cycle(self, state: BotState, by_name: dict[str, AgentOutput]) -> dict[str, Any]:
         bias = self._bias()
         current_return = _safe_float(state.total_return_pct, 0.0)
@@ -102,6 +201,7 @@ class ManagerLearningStore:
         current_realized = _safe_float(state.realized_pnl, 0.0)
         last_realized = _safe_float(self._cache.get("last_realized_pnl"), 0.0)
         realized_delta = current_realized - last_realized
+        sleeve_attr = self._collect_sleeve_realized_delta()
 
         risk_payload = (by_name.get("risk_guard").payload if by_name.get("risk_guard") else {})
         trend_payload = (by_name.get("invest_trend").payload if by_name.get("invest_trend") else {})
@@ -160,6 +260,16 @@ class ManagerLearningStore:
             bias["defensive"] += 0.02
             reasons.append("overtrading_guard")
 
+        sleeve_delta = dict(sleeve_attr.get("delta") or {})
+        for sleeve in ("trend", "scalping", "defensive"):
+            pnl = _safe_float(sleeve_delta.get(sleeve), 0.0)
+            if pnl > 0:
+                bias[sleeve] += 0.03
+                reasons.append(f"attr_gain_{sleeve}")
+            elif pnl < 0:
+                bias[sleeve] -= 0.03
+                reasons.append(f"attr_loss_{sleeve}")
+
         if risk_level in {"HIGH", "CRITICAL"}:
             bias["trend"] -= 0.02
             bias["scalping"] -= 0.02
@@ -176,12 +286,25 @@ class ManagerLearningStore:
         self._cache["sleeve_bias"] = bias
         self._cache["last_total_return_pct"] = current_return
         self._cache["last_realized_pnl"] = current_realized
+        self._cache["last_processed_trade_index"] = int(sleeve_attr.get("end_idx") or 0)
+        self._cache["sleeve_realized_totals"] = {
+            "trend": round(_safe_float((sleeve_attr.get("totals") or {}).get("trend"), 0.0), 4),
+            "scalping": round(_safe_float((sleeve_attr.get("totals") or {}).get("scalping"), 0.0), 4),
+            "defensive": round(_safe_float((sleeve_attr.get("totals") or {}).get("defensive"), 0.0), 4),
+        }
         self._save()
 
         return {
             "sleeve_bias": bias,
             "pnl_delta_pct": round(pnl_delta, 4),
             "realized_delta": round(realized_delta, 4),
+            "sleeve_realized_delta": {
+                "trend": round(_safe_float((sleeve_attr.get("delta") or {}).get("trend"), 0.0), 4),
+                "scalping": round(_safe_float((sleeve_attr.get("delta") or {}).get("scalping"), 0.0), 4),
+                "defensive": round(_safe_float((sleeve_attr.get("delta") or {}).get("defensive"), 0.0), 4),
+            },
+            "sleeve_realized_totals": self._cache.get("sleeve_realized_totals") or {},
+            "new_sell_trades": int(sleeve_attr.get("new_sells") or 0),
             "buy_fills": int(buy_fills),
             "sell_fills": int(sell_fills),
             "reasons": reasons,
@@ -851,9 +974,11 @@ class ManagerAgent:
             learn_result = self.learning_store.update_from_cycle(state, by_name)
             if learn_result.get("reasons"):
                 logging.info(
-                    "MANAGER_LEARN delta=%.4f realized_delta=%.2f fills(b=%s,s=%s) reasons=%s bias=%s",
+                    "MANAGER_LEARN delta=%.4f realized_delta=%.2f sleeve_delta=%s new_sells=%s fills(b=%s,s=%s) reasons=%s bias=%s",
                     _safe_float(learn_result.get("pnl_delta_pct"), 0.0),
                     _safe_float(learn_result.get("realized_delta"), 0.0),
+                    learn_result.get("sleeve_realized_delta"),
+                    int(learn_result.get("new_sell_trades") or 0),
                     int(learn_result.get("buy_fills") or 0),
                     int(learn_result.get("sell_fills") or 0),
                     ",".join(list(learn_result.get("reasons") or [])),
