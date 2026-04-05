@@ -110,6 +110,18 @@ class ManagerLearningStore:
             "reason_code_stats": {},
             "reason_code_ema": {},
             "reason_code_ema_alpha": {},
+            "daily_outlook": {
+                "label": "INSUFFICIENT_DATA",
+                "market_quality_score": 0.0,
+                "expected_profit_per_trade_krw": 0.0,
+                "expected_daily_profit_krw": 0.0,
+                "expected_daily_profit_rate_pct": 0.0,
+                "expected_trades_per_day": 0.0,
+                "active_sell_days": 0,
+                "historical_sell_trades": 0,
+                "confidence": 0.0,
+                "risk_level": "LOW",
+            },
             "updated_at": datetime.now().isoformat(timespec="seconds"),
         }
 
@@ -204,6 +216,7 @@ class ManagerLearningStore:
         }
         reason_totals: dict[str, dict[str, float]] = {}
         reason_delta: dict[str, dict[str, float]] = {}
+        sell_days: set[str] = set()
         start_idx = int(_safe_float(self._cache.get("last_processed_trade_index"), 0.0))
         end_idx = start_idx
 
@@ -215,6 +228,8 @@ class ManagerLearningStore:
                     "bucket_delta": bucket_delta,
                     "reason_totals": reason_totals,
                     "reason_delta": reason_delta,
+                    "active_sell_days": 0,
+                    "historical_sell_trades": 0,
                     "new_sells": 0,
                     "start_idx": start_idx,
                     "end_idx": end_idx,
@@ -233,6 +248,10 @@ class ManagerLearningStore:
                 pnl = _safe_float(row.get("realized_pnl"), 0.0)
                 if sleeve in totals:
                     totals[sleeve] += pnl
+                ts_raw = str(row.get("ts") or "")
+                day_key = ts_raw.split("T")[0].split(" ")[0].strip()
+                if day_key:
+                    sell_days.add(day_key)
                 reason = str(row.get("ai_sleeve_reason") or "RSN_UNKNOWN").strip() or "RSN_UNKNOWN"
                 if reason not in reason_totals:
                     reason_totals[reason] = {"sells": 0.0, "wins": 0.0, "realized": 0.0}
@@ -273,6 +292,8 @@ class ManagerLearningStore:
                 "bucket_delta": bucket_delta,
                 "reason_totals": reason_totals,
                 "reason_delta": reason_delta,
+                "active_sell_days": len(sell_days),
+                "historical_sell_trades": int(sum(_safe_float((x or {}).get("sells"), 0.0) for x in reason_totals.values())),
                 "new_sells": int(new_sell_count),
                 "start_idx": start_idx,
                 "end_idx": end_idx,
@@ -284,6 +305,8 @@ class ManagerLearningStore:
                 "bucket_delta": bucket_delta,
                 "reason_totals": reason_totals,
                 "reason_delta": reason_delta,
+                "active_sell_days": len(sell_days),
+                "historical_sell_trades": int(sum(_safe_float((x or {}).get("sells"), 0.0) for x in reason_totals.values())),
                 "new_sells": 0,
                 "start_idx": start_idx,
                 "end_idx": end_idx,
@@ -337,11 +360,13 @@ class ManagerLearningStore:
         sleeve_attr = self._collect_sleeve_realized_delta()
 
         risk_payload = (by_name.get("risk_guard").payload if by_name.get("risk_guard") else {})
+        market_payload = (by_name.get("market_analysis").payload if by_name.get("market_analysis") else {})
         trend_payload = (by_name.get("invest_trend").payload if by_name.get("invest_trend") else {})
         scalp_payload = (by_name.get("invest_scalping").payload if by_name.get("invest_scalping") else {})
         def_payload = (by_name.get("invest_defensive").payload if by_name.get("invest_defensive") else {})
 
         risk_level = str(risk_payload.get("risk_level") or "LOW")
+        market_confidence = _clamp(_safe_float(market_payload.get("confidence"), 0.0), 0.0, 1.0)
         trend_signal = str(trend_payload.get("signal") or "WAIT")
         scalp_signal = str(scalp_payload.get("signal") or "STANDBY")
         def_posture = str(def_payload.get("posture") or "BUFFER")
@@ -525,7 +550,76 @@ class ManagerLearningStore:
                 "blended_expectancy": blended_expectancy,
                 "expectancy_score": expectancy_score,
             }
+
+        weighted_trades = 0.0
+        weighted_expectancy = 0.0
+        weighted_confidence = 0.0
+        weighted_win_lb = 0.0
+        for row in normalized_reason_stats.values():
+            sells = max(0.0, _safe_float(row.get("sells"), 0.0))
+            if sells <= 0:
+                continue
+            confidence = _clamp(_safe_float(row.get("confidence"), 0.0), 0.0, 1.0)
+            blended = _safe_float(row.get("blended_expectancy"), 0.0)
+            win_lb_ratio = _clamp(_safe_float(row.get("win_rate_lb_pct"), 0.0) / 100.0, 0.0, 1.0)
+            w = sells * (0.5 + 0.5 * confidence)
+            weighted_trades += w
+            weighted_expectancy += blended * w
+            weighted_confidence += confidence * w
+            weighted_win_lb += win_lb_ratio * w
+
+        expected_profit_per_trade = (weighted_expectancy / weighted_trades) if weighted_trades > 0 else 0.0
+        hist_sell_trades = int(sleeve_attr.get("historical_sell_trades") or 0)
+        active_sell_days = max(0, int(sleeve_attr.get("active_sell_days") or 0))
+        expected_trades_per_day = (float(hist_sell_trades) / float(active_sell_days)) if active_sell_days > 0 else 0.0
+        expected_daily_profit = expected_profit_per_trade * expected_trades_per_day
+
+        capital_base = max(_safe_float(state.equity, 0.0), _safe_float(state.cash_balance, 0.0), 0.0)
+        expected_daily_profit_rate_pct = 0.0
+        if capital_base >= 1000.0:
+            expected_daily_profit_rate_pct = (expected_daily_profit / capital_base) * 100.0
+        expected_daily_profit_rate_pct = _clamp(expected_daily_profit_rate_pct, -15.0, 15.0)
+
+        avg_confidence = (weighted_confidence / weighted_trades) if weighted_trades > 0 else 0.0
+        avg_win_lb = (weighted_win_lb / weighted_trades) if weighted_trades > 0 else 0.0
+        sample_quality = _clamp(float(hist_sell_trades) / 30.0, 0.0, 1.0)
+        risk_mult = {
+            "LOW": 1.00,
+            "MEDIUM": 0.92,
+            "HIGH": 0.78,
+            "CRITICAL": 0.60,
+        }.get(risk_level, 0.90)
+        quality_score = 100.0 * (
+            (0.35 * avg_confidence)
+            + (0.30 * avg_win_lb)
+            + (0.20 * sample_quality)
+            + (0.15 * market_confidence)
+        ) * risk_mult
+        quality_score = round(_clamp(quality_score, 0.0, 99.0), 2)
+
+        outlook_label = "INSUFFICIENT_DATA"
+        if hist_sell_trades >= 5 and active_sell_days >= 2:
+            if quality_score >= 65.0 and expected_daily_profit_rate_pct >= 0.20:
+                outlook_label = "POSITIVE"
+            elif quality_score >= 45.0 and expected_daily_profit_rate_pct >= 0.0:
+                outlook_label = "NEUTRAL"
+            else:
+                outlook_label = "CAUTIOUS"
+
+        daily_outlook = {
+            "label": outlook_label,
+            "market_quality_score": quality_score,
+            "expected_profit_per_trade_krw": round(expected_profit_per_trade, 2),
+            "expected_daily_profit_krw": round(expected_daily_profit, 2),
+            "expected_daily_profit_rate_pct": round(expected_daily_profit_rate_pct, 4),
+            "expected_trades_per_day": round(expected_trades_per_day, 3),
+            "active_sell_days": active_sell_days,
+            "historical_sell_trades": hist_sell_trades,
+            "confidence": round(_clamp(avg_confidence, 0.0, 1.0), 4),
+            "risk_level": risk_level,
+        }
         self._cache["reason_code_stats"] = normalized_reason_stats
+        self._cache["daily_outlook"] = daily_outlook
         self._save()
 
         return {
@@ -542,6 +636,7 @@ class ManagerLearningStore:
             "time_bucket_stats": self._cache.get("time_bucket_stats") or {},
             "reason_code_delta": sleeve_attr.get("reason_delta") or {},
             "reason_code_stats": self._cache.get("reason_code_stats") or {},
+            "daily_outlook": self._cache.get("daily_outlook") or {},
             "reason_signal_summary": reason_signal_summary,
             "new_sell_trades": int(sleeve_attr.get("new_sells") or 0),
             "buy_fills": int(buy_fills),
@@ -592,6 +687,7 @@ class PerformanceFeedbackAgent(BaseAgent):
                 "top_reason_code": top_reason,
                 "worst_reason_code": worst_reason,
                 "reason_code_stats": reason_stats,
+                "daily_outlook": dict(snap.get("daily_outlook") or {}),
                 "updated_at": str(snap.get("updated_at") or ""),
             },
         )
@@ -890,6 +986,7 @@ class ReportingAgent(BaseAgent):
         report_kind = str(context.get("report_kind") or "hourly")
         triggers = list(context.get("triggers") or [])
         learning = dict(context.get("learning") or {})
+        daily_outlook = dict(learning.get("daily_outlook") or {})
         now = datetime.now().isoformat(timespec="seconds")
         snapshot = {
             "timestamp": now,
@@ -921,9 +1018,12 @@ class ReportingAgent(BaseAgent):
 
         one_line = " | ".join(f"{o.agent}:{o.summary}" for o in outputs)
         trigger_part = f" triggers={','.join(triggers)}" if triggers else ""
+        outlook_label = str(daily_outlook.get("label") or "INSUFFICIENT_DATA")
+        outlook_rate = _safe_float(daily_outlook.get("expected_daily_profit_rate_pct"), 0.0)
+        quality_score = _safe_float(daily_outlook.get("market_quality_score"), 0.0)
         summary = (
             f"manager_report kind={report_kind}{trigger_part} ts={now} "
-            f"symbol={state.selected_symbol or '-'} {one_line}"
+            f"symbol={state.selected_symbol or '-'} outlook={outlook_label} exp_day={outlook_rate:+.2f}% quality={quality_score:.1f} {one_line}"
         ).strip()
         return AgentOutput(agent=self.name, summary=summary, payload=snapshot)
 
@@ -1015,12 +1115,20 @@ class ManagerSlackNotifier:
 
         payload = report_output.payload if isinstance(report_output.payload, dict) else {}
         state = payload.get("state") if isinstance(payload.get("state"), dict) else {}
+        learning = payload.get("learning") if isinstance(payload.get("learning"), dict) else {}
+        outlook = learning.get("daily_outlook") if isinstance(learning.get("daily_outlook"), dict) else {}
         symbol = str(state.get("selected_symbol") or "-")
         regime = str(state.get("market_regime") or "UNKNOWN")
         ret = _safe_float(state.get("total_return_pct"), 0.0)
+        exp_rate = _safe_float(outlook.get("expected_daily_profit_rate_pct"), 0.0)
+        quality = _safe_float(outlook.get("market_quality_score"), 0.0)
+        label = str(outlook.get("label") or "INSUFFICIENT_DATA")
 
         kind = str(payload.get("report_kind") or "hourly").upper()
-        text = f"[Manager {kind}] symbol={symbol} regime={regime} return={ret:.2f}%\n{report_output.summary}"
+        text = (
+            f"[Manager {kind}] symbol={symbol} regime={regime} return={ret:.2f}% "
+            f"outlook={label} exp_day={exp_rate:+.2f}% quality={quality:.1f}\n{report_output.summary}"
+        )
         try:
             resp = requests.post(
                 self.webhook_url,

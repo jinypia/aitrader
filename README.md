@@ -333,6 +333,8 @@ Manager command model:
 - EMA speed is dynamic per reason code (`ema_alpha`), adapting to sample size and recent volatility.
 - EMA speed is sleeve-aware: trend/scalping reasons adapt faster, defensive reasons adapt slower.
 - Last known per-reason `ema_alpha` is retained across manager cycles in learning state.
+- Manager learning now computes `daily_outlook` from actual realized SELL history quality and reason expectancy.
+- `daily_outlook` includes `market_quality_score`, `expected_daily_profit_krw`, and `expected_daily_profit_rate_pct` for daily manager outlook guidance.
 
 Runtime tuning keys (in `.env` or `data/runtime_config.json`):
 
