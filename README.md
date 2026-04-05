@@ -341,6 +341,7 @@ Manager command model:
 - Runtime parameter tuning is now agent-suggested and manager-approved automatically; manager applies only when confidence/risk gates pass.
 - Manager now requires 2 consecutive identical tuning suggestions before applying runtime overrides, reducing oscillation.
 - After an auto-apply, manager enters a short cooldown window (cycles) before applying another tune; HIGH/CRITICAL risk can bypass this cooldown.
+- Manager logs every tuning decision state (`pending`/`rejected`/`applied`) for auditability.
 - Hourly manager reports are now change-focused: repeated unchanged agent content is suppressed (`no_material_changes` when nothing changed).
 
 Runtime tuning keys (in `.env` or `data/runtime_config.json`):

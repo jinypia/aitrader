@@ -1728,13 +1728,18 @@ class ManagerAgent:
             outputs.append(tuning_output)
             by_name[tuning_output.agent] = tuning_output
 
-            if bool(tuning_decision.get("applied")):
-                logging.info(
-                    "MANAGER_TUNING_APPLIED keys=%s confidence=%.2f reason=%s",
-                    ",".join(list(tuning_decision.get("applied_keys") or [])),
-                    _safe_float(tuning_decision.get("confidence"), 0.0),
-                    str(tuning_decision.get("reason") or ""),
-                )
+            tuning_status = str(tuning_decision.get("status") or "unknown")
+            logging.info(
+                "MANAGER_TUNING_DECISION status=%s reason=%s confidence=%.2f pending=%s/%s cooldown=%s candidate=%s applied=%s",
+                tuning_status,
+                str(tuning_decision.get("reason") or ""),
+                _safe_float(tuning_decision.get("confidence"), 0.0),
+                int(tuning_decision.get("pending_count") or 0),
+                int(tuning_decision.get("required_count") or 0),
+                int(tuning_decision.get("cooldown_remaining") or 0),
+                ",".join(list(tuning_decision.get("candidate_keys") or [])),
+                ",".join(list(tuning_decision.get("applied_keys") or [])),
+            )
             if learn_result.get("reasons"):
                 logging.info(
                     "MANAGER_LEARN delta=%.4f realized_delta=%.2f sleeve_delta=%s reason_signal=%s new_sells=%s fills(b=%s,s=%s) reasons=%s bias=%s",

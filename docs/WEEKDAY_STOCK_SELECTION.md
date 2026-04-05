@@ -94,7 +94,7 @@ self.config = {
     "max_daily_loss": -50000,    # Stop loss for entire day (-₩50k)
     "session_interval": 2,       # Re-select stocks every 2 hours
     "top_n_stocks": 5,          # Trade exactly 5 stocks
-    "bar_interval": 2,          # Use 2-minute bars
+   "bar_interval": 10,         # Use 10-minute bars
 }
 ```
 
@@ -105,7 +105,7 @@ self.config = {
 | `min_win_rate` | 55.0% | Only trade if yesterday validation showed 55%+ win rate |
 | `max_daily_loss` | -₩50k | Stop trading if daily loss exceeds -₩50,000 |
 | `top_n_stocks` | 5 | Always trade top 5 stocks selected each session |
-| `bar_interval` | 2 min | Use 2-minute bars (vs 5 or 10) |
+| `bar_interval` | 10 min | Use 10-minute bars |
 
 ## 📈 Daily Reports
 

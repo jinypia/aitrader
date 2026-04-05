@@ -18,3 +18,7 @@ mobile_app/www/
 # Python bytecode/cache
 **/__pycache__/
 *.pyc
+
+# Runtime lock/report artifacts (explicit for clarity)
+data/**/*.lock
+data/*_report*.json
