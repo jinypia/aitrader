@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import threading
 import time
 from dataclasses import dataclass
@@ -259,6 +260,17 @@ class ManagerLearningStore:
                 "end_idx": end_idx,
             }
 
+    @staticmethod
+    def _wilson_lower_bound(wins: int, trials: int, z: float = 1.96) -> float:
+        if trials <= 0:
+            return 0.0
+        p = max(0.0, min(1.0, float(wins) / float(trials)))
+        z2 = z * z
+        denom = 1.0 + z2 / trials
+        center = p + z2 / (2.0 * trials)
+        margin = z * math.sqrt((p * (1.0 - p) + z2 / (4.0 * trials)) / trials)
+        return max(0.0, min(1.0, (center - margin) / denom))
+
     def update_from_cycle(self, state: BotState, by_name: dict[str, AgentOutput]) -> dict[str, Any]:
         bias = self._bias()
         current_return = _safe_float(state.total_return_pct, 0.0)
@@ -339,6 +351,7 @@ class ManagerLearningStore:
         # Reason-code expectancy signal: apply sleeve-level reinforcement from
         # standardized reason performance, but only when sample size is sufficient.
         reason_delta = dict(sleeve_attr.get("reason_delta") or {})
+        reason_totals = dict(sleeve_attr.get("reason_totals") or {})
         reason_signal_summary: dict[str, float] = {"trend": 0.0, "scalping": 0.0, "defensive": 0.0}
         for code, row in reason_delta.items():
             if not isinstance(row, dict):
@@ -348,6 +361,12 @@ class ManagerLearningStore:
                 continue
             avg_realized = _safe_float(row.get("realized"), 0.0) / max(1, sells)
 
+            hist_row = dict(reason_totals.get(code) or {})
+            hist_sells = int(_safe_float(hist_row.get("sells"), 0.0))
+            hist_wins = int(_safe_float(hist_row.get("wins"), 0.0))
+            win_lb = self._wilson_lower_bound(hist_wins, hist_sells)
+            sample_conf = _clamp(float(hist_sells) / 20.0, 0.0, 1.0)
+
             code_u = str(code).upper()
             target_sleeve = "trend"
             if "SCALP" in code_u:
@@ -355,9 +374,11 @@ class ManagerLearningStore:
             elif "DEFENSIVE" in code_u or "RISK_OFF" in code_u or "BEARISH" in code_u:
                 target_sleeve = "defensive"
 
-            # Convert expectancy into bounded adjustment and require at least 2 sells.
-            if sells >= 2:
-                adj = _clamp(avg_realized / 20000.0, -0.03, 0.03)
+            # Convert expectancy into bounded adjustment with confidence weighting.
+            if hist_sells >= 3:
+                quality_boost = 0.75 + win_lb
+                raw_adj = (avg_realized / 20000.0) * sample_conf * quality_boost
+                adj = _clamp(raw_adj, -0.03, 0.03)
                 if abs(adj) >= 0.005:
                     bias[target_sleeve] += adj
                     reason_signal_summary[target_sleeve] = round(
@@ -410,12 +431,18 @@ class ManagerLearningStore:
             realized = round(_safe_float(row.get("realized"), 0.0), 4)
             win_rate = round((wins / sells) * 100.0, 2) if sells > 0 else 0.0
             avg_realized = round(realized / sells, 4) if sells > 0 else 0.0
+            win_rate_lb = round(self._wilson_lower_bound(wins, sells) * 100.0, 2) if sells > 0 else 0.0
+            confidence = round(_clamp(float(sells) / 20.0, 0.0, 1.0), 4)
+            expectancy_score = round(avg_realized * confidence, 4)
             normalized_reason_stats[str(reason)] = {
                 "sells": sells,
                 "wins": wins,
                 "realized": realized,
                 "win_rate_pct": win_rate,
                 "avg_realized": avg_realized,
+                "win_rate_lb_pct": win_rate_lb,
+                "confidence": confidence,
+                "expectancy_score": expectancy_score,
             }
         self._cache["reason_code_stats"] = normalized_reason_stats
         self._save()

@@ -328,6 +328,7 @@ Manager command model:
 - Learning state includes time-bucket stats (`opening`/`regular`/`after`/`off`) and manager work orders adapt using those stats.
 - Learning state also tracks `reason_code_stats` (sells/wins/win_rate/avg_realized by reason code), and manager urgency reflects poor-performing reason codes.
 - Reason-code expectancy now directly nudges sleeve bias updates (`reason_signal_summary`) in addition to manager urgency.
+- Reason-code expectancy weighting is confidence-aware (`confidence`) and uses Wilson lower bound (`win_rate_lb_pct`) for stability.
 
 Tune event cadence:
 
