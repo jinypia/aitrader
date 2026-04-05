@@ -239,6 +239,20 @@ pip install rich
 pip install -r requirements.txt
 ```
 
+### Runtime Lock Troubleshooting
+
+If startup fails with "Another bot runtime is already active", use the lock helper:
+
+```bash
+# Show lock metadata and active holder PID/command
+python scripts/runtime_lock_ctl.py status
+
+# Stop the active holder safely (SIGTERM, then SIGKILL if needed)
+python scripts/runtime_lock_ctl.py stop
+```
+
+By default, `stop` only targets processes that look like the bot runtime (`main.py`).
+
 ### Color Coding
 
 - **Green**: Gains, active positions, successful trades

@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import threading
 import time
 import fcntl
@@ -211,13 +212,49 @@ def _acquire_runtime_lock(path: Path):
 
 def _runtime_lock_holder_hint(path: Path) -> str:
     """Best-effort human-readable lock holder hint from lock file contents."""
+    raw = ""
     try:
-        if not path.exists():
-            return ""
-        raw = path.read_text(encoding="utf-8").strip()
-        return raw[:240]
+        if path.exists():
+            raw = path.read_text(encoding="utf-8").strip()
     except Exception:
-        return ""
+        raw = ""
+
+    owner_pid = ""
+    try:
+        out = subprocess.check_output(
+            ["lsof", "-t", str(path)],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+        owner_pid = next((line.strip() for line in out.splitlines() if line.strip().isdigit()), "")
+    except Exception:
+        owner_pid = ""
+
+    if not owner_pid and raw:
+        match = re.search(r"(?:^|\s)pid=(\d+)(?:\s|$)", raw)
+        if match:
+            owner_pid = match.group(1)
+
+    owner_cmd = ""
+    if owner_pid:
+        try:
+            owner_cmd = subprocess.check_output(
+                ["ps", "-p", owner_pid, "-o", "command="],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+        except Exception:
+            owner_cmd = ""
+
+    parts: list[str] = []
+    if raw:
+        parts.append(raw)
+    if owner_pid and ("pid=" not in raw):
+        parts.append(f"pid={owner_pid}")
+    if owner_cmd:
+        parts.append(f"cmd={owner_cmd}")
+    hint = " ".join(parts).strip()
+    return hint[:420]
 
 
 def _release_runtime_lock(lock_fp) -> None:
