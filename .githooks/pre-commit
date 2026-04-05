@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Scan staged text files for common secret patterns.
+staged_files=$(git diff --cached --name-only --diff-filter=ACM)
+if [[ -z "${staged_files}" ]]; then
+  exit 0
+fi
+
+pattern='hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]+|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{35}|BEGIN (RSA|EC|OPENSSH|PRIVATE) KEY|-----BEGIN PRIVATE KEY-----'
+
+hits=()
+while IFS= read -r f; do
+  [[ -f "$f" ]] || continue
+
+  # Skip common binary assets and dependency/vendor trees.
+  case "$f" in
+    .githooks/pre-commit) continue ;;
+    *.png|*.jpg|*.jpeg|*.gif|*.webp|*.pdf|*.zip|*.tar|*.gz|*.7z|*.bin|*.pyc) continue ;;
+    .venv/*|mobile_app/node_modules/*|data/backtest_cache/*) continue ;;
+  esac
+
+  if grep -nE "$pattern" "$f" >/dev/null 2>&1; then
+    while IFS= read -r line; do
+      hits+=("$line")
+    done < <(grep -nE "$pattern" "$f" | sed "s#^#$f:#")
+  fi
+done <<< "$staged_files"
+
+if (( ${#hits[@]} > 0 )); then
+  echo ""
+  echo "[pre-commit] Potential secret detected. Commit blocked."
+  printf '%s\n' "${hits[@]}"
+  echo ""
+  echo "If this is a false positive, remove/redact before commit."
+  exit 1
+fi
+
+exit 0

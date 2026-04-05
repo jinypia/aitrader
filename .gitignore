@@ -3,7 +3,6 @@ data/
 logs/
 .venv/
 personal/
-README.md
 
 # Mobile app dependency/cache artifacts
 mobile_app/node_modules/
