@@ -1382,11 +1382,13 @@ class ManagerAgent:
         self.reporting_agent = ReportingAgent(report_path=report_path)
         self.slack_notifier = ManagerSlackNotifier(enabled=slack_enabled, webhook_url=slack_webhook_url)
         self.event_report_cooldown_seconds = max(10, int(event_report_cooldown_seconds))
+        self._tuning_pending_signature = ""
+        self._tuning_pending_count = 0
+        self._tuning_required_confirmations = 2
 
-    @staticmethod
     def _apply_tuning_decision(
+        self,
         tuning_output: AgentOutput,
-        by_name: dict[str, AgentOutput],
     ) -> dict[str, Any]:
         payload = tuning_output.payload if isinstance(tuning_output.payload, dict) else {}
         proposal = dict(payload.get("proposal") or {})
@@ -1401,14 +1403,20 @@ class ManagerAgent:
             "confidence": round(confidence, 4),
         }
         if not proposal:
+            self._tuning_pending_signature = ""
+            self._tuning_pending_count = 0
             return decision
 
         if risk_level in {"HIGH", "CRITICAL"}:
             decision["reason"] = "risk_guard_block"
+            self._tuning_pending_signature = ""
+            self._tuning_pending_count = 0
             return decision
 
         if confidence < 0.62:
             decision["reason"] = "low_confidence"
+            self._tuning_pending_signature = ""
+            self._tuning_pending_count = 0
             return decision
 
         settings = load_settings()
@@ -1428,6 +1436,23 @@ class ManagerAgent:
 
         if not apply_updates:
             decision["reason"] = "no_material_delta"
+            self._tuning_pending_signature = ""
+            self._tuning_pending_count = 0
+            return decision
+
+        signature = json.dumps(sorted(apply_updates.items()), ensure_ascii=True, separators=(",", ":"))
+        if signature == self._tuning_pending_signature:
+            self._tuning_pending_count += 1
+        else:
+            self._tuning_pending_signature = signature
+            self._tuning_pending_count = 1
+
+        if self._tuning_pending_count < int(self._tuning_required_confirmations):
+            decision["status"] = "pending"
+            decision["reason"] = "await_confirmation"
+            decision["pending_count"] = int(self._tuning_pending_count)
+            decision["required_count"] = int(self._tuning_required_confirmations)
+            decision["candidate_keys"] = sorted(apply_updates.keys())
             return decision
 
         try:
@@ -1436,9 +1461,15 @@ class ManagerAgent:
             decision["applied"] = True
             decision["applied_keys"] = sorted(apply_updates.keys())
             decision["reason"] = "manager_approved"
+            decision["pending_count"] = int(self._tuning_pending_count)
+            decision["required_count"] = int(self._tuning_required_confirmations)
+            self._tuning_pending_signature = ""
+            self._tuning_pending_count = 0
             return decision
         except Exception as exc:
             decision["reason"] = f"apply_error:{exc}"
+            self._tuning_pending_signature = ""
+            self._tuning_pending_count = 0
             return decision
 
     @staticmethod
@@ -1665,7 +1696,7 @@ class ManagerAgent:
                     payload={"error": str(exc)},
                 )
 
-            tuning_decision = self._apply_tuning_decision(tuning_output, by_name)
+            tuning_decision = self._apply_tuning_decision(tuning_output)
             tuning_payload = dict(tuning_output.payload if isinstance(tuning_output.payload, dict) else {})
             tuning_payload["decision"] = tuning_decision
             tuning_output = AgentOutput(
