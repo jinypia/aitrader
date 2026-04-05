@@ -7,7 +7,7 @@ if [[ -z "${staged_files}" ]]; then
   exit 0
 fi
 
-pattern='hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]+|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{35}|BEGIN (RSA|EC|OPENSSH|PRIVATE) KEY|-----BEGIN PRIVATE KEY-----'
+pattern='hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]+|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{35}|sk_live_[A-Za-z0-9]{16,}|rk_live_[A-Za-z0-9]{16,}|Authorization:[[:space:]]*Bearer[[:space:]]+[A-Za-z0-9._-]{20,}|BEGIN (RSA|EC|OPENSSH|PRIVATE) KEY|-----BEGIN PRIVATE KEY-----'
 
 hits=()
 while IFS= read -r f; do

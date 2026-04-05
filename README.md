@@ -163,6 +163,25 @@ Auto-trading account/performance tracking:
 - Kiwoom REST endpoints can share URI and are distinguished by `api-id` header.
 - Token is typically short-lived (often 24h), so production bots should refresh automatically.
 
+## Git Secret Guard (Team)
+
+This repository includes a commit-time secret scanner at `.githooks/pre-commit`.
+
+Enable it once per clone:
+
+```bash
+git config core.hooksPath .githooks
+chmod +x .githooks/pre-commit
+```
+
+What it blocks:
+
+- Slack webhook tokens
+- AWS-style access keys
+- GitHub/Slack style tokens
+- Common live API keys and leaked `Authorization: Bearer ...` headers
+- PEM private key markers
+
 ## 4) Real-time CLI Dashboard (NEW)
 
 Monitor trading transactions and performance in real-time directly from the terminal.
