@@ -273,7 +273,16 @@ class ManagerLearningStore:
         return max(0.0, min(1.0, (center - margin) / denom))
 
     @staticmethod
-    def _dynamic_ema_alpha(delta_avg: float, hist_sells: int, prev_ema: float) -> float:
+    def _target_sleeve_from_reason(reason_code: str) -> str:
+        code_u = str(reason_code or "").upper()
+        if "SCALP" in code_u:
+            return "scalping"
+        if "DEFENSIVE" in code_u or "RISK_OFF" in code_u or "BEARISH" in code_u:
+            return "defensive"
+        return "trend"
+
+    @staticmethod
+    def _dynamic_ema_alpha(delta_avg: float, hist_sells: int, prev_ema: float, target_sleeve: str) -> float:
         # More history -> slower updates. Higher volatility -> slower updates.
         # Sign flip vs previous EMA -> slightly faster adaptation.
         sample_conf = _clamp(float(hist_sells) / 20.0, 0.0, 1.0)
@@ -281,6 +290,12 @@ class ManagerLearningStore:
         alpha = 0.35 - (0.20 * sample_conf) - (0.10 * vol_norm)
         if prev_ema * delta_avg < 0:
             alpha += 0.05
+        sleeve_scale = {
+            "trend": 1.05,
+            "scalping": 1.15,
+            "defensive": 0.85,
+        }.get(str(target_sleeve or "").lower(), 1.0)
+        alpha *= sleeve_scale
         return round(_clamp(alpha, 0.08, 0.40), 4)
 
     def update_from_cycle(self, state: BotState, by_name: dict[str, AgentOutput]) -> dict[str, Any]:
@@ -379,7 +394,8 @@ class ManagerLearningStore:
             hist_row = dict(reason_totals.get(code) or {})
             hist_sells = int(_safe_float(hist_row.get("sells"), 0.0))
             prev_ema = _safe_float(reason_ema.get(code), delta_avg)
-            alpha = self._dynamic_ema_alpha(delta_avg, hist_sells, prev_ema)
+            target_sleeve = self._target_sleeve_from_reason(str(code))
+            alpha = self._dynamic_ema_alpha(delta_avg, hist_sells, prev_ema, target_sleeve)
             reason_ema_alpha[str(code)] = alpha
             reason_ema[code] = round((alpha * delta_avg) + ((1.0 - alpha) * prev_ema), 6)
 
@@ -399,12 +415,7 @@ class ManagerLearningStore:
             win_lb = self._wilson_lower_bound(hist_wins, hist_sells)
             sample_conf = _clamp(float(hist_sells) / 20.0, 0.0, 1.0)
 
-            code_u = str(code).upper()
-            target_sleeve = "trend"
-            if "SCALP" in code_u:
-                target_sleeve = "scalping"
-            elif "DEFENSIVE" in code_u or "RISK_OFF" in code_u or "BEARISH" in code_u:
-                target_sleeve = "defensive"
+            target_sleeve = self._target_sleeve_from_reason(str(code))
 
             # Convert expectancy into bounded adjustment with confidence weighting.
             if hist_sells >= 3:

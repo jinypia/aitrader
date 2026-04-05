@@ -331,6 +331,7 @@ Manager command model:
 - Reason-code expectancy weighting is confidence-aware (`confidence`) and uses Wilson lower bound (`win_rate_lb_pct`) for stability.
 - Reason-code expectancy also includes recency-weighted EMA (`ema_expectancy`) and blended score (`blended_expectancy`).
 - EMA speed is dynamic per reason code (`ema_alpha`), adapting to sample size and recent volatility.
+- EMA speed is sleeve-aware: trend/scalping reasons adapt faster, defensive reasons adapt slower.
 
 Tune event cadence:
 
