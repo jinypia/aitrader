@@ -79,6 +79,7 @@ class ManagerLearningStore:
                 "after": {"sells": 0, "wins": 0, "realized": 0.0},
                 "off": {"sells": 0, "wins": 0, "realized": 0.0},
             },
+            "reason_code_stats": {},
             "updated_at": datetime.now().isoformat(timespec="seconds"),
         }
 
@@ -171,6 +172,8 @@ class ManagerLearningStore:
             "after": {"sells": 0, "wins": 0, "realized": 0.0},
             "off": {"sells": 0, "wins": 0, "realized": 0.0},
         }
+        reason_totals: dict[str, dict[str, float]] = {}
+        reason_delta: dict[str, dict[str, float]] = {}
         start_idx = int(_safe_float(self._cache.get("last_processed_trade_index"), 0.0))
         end_idx = start_idx
 
@@ -180,6 +183,8 @@ class ManagerLearningStore:
                     "totals": totals,
                     "delta": delta,
                     "bucket_delta": bucket_delta,
+                    "reason_totals": reason_totals,
+                    "reason_delta": reason_delta,
                     "new_sells": 0,
                     "start_idx": start_idx,
                     "end_idx": end_idx,
@@ -198,6 +203,13 @@ class ManagerLearningStore:
                 pnl = _safe_float(row.get("realized_pnl"), 0.0)
                 if sleeve in totals:
                     totals[sleeve] += pnl
+                reason = str(row.get("ai_sleeve_reason") or "RSN_UNKNOWN").strip() or "RSN_UNKNOWN"
+                if reason not in reason_totals:
+                    reason_totals[reason] = {"sells": 0.0, "wins": 0.0, "realized": 0.0}
+                reason_totals[reason]["sells"] += 1.0
+                reason_totals[reason]["realized"] += pnl
+                if pnl > 0:
+                    reason_totals[reason]["wins"] += 1.0
 
             new_rows = trades[start_idx:]
             new_sell_count = 0
@@ -217,11 +229,20 @@ class ManagerLearningStore:
                     bucket_delta[bucket]["realized"] += pnl
                     if pnl > 0:
                         bucket_delta[bucket]["wins"] += 1
+                reason = str(row.get("ai_sleeve_reason") or "RSN_UNKNOWN").strip() or "RSN_UNKNOWN"
+                if reason not in reason_delta:
+                    reason_delta[reason] = {"sells": 0.0, "wins": 0.0, "realized": 0.0}
+                reason_delta[reason]["sells"] += 1.0
+                reason_delta[reason]["realized"] += pnl
+                if pnl > 0:
+                    reason_delta[reason]["wins"] += 1.0
 
             return {
                 "totals": totals,
                 "delta": delta,
                 "bucket_delta": bucket_delta,
+                "reason_totals": reason_totals,
+                "reason_delta": reason_delta,
                 "new_sells": int(new_sell_count),
                 "start_idx": start_idx,
                 "end_idx": end_idx,
@@ -231,6 +252,8 @@ class ManagerLearningStore:
                 "totals": totals,
                 "delta": delta,
                 "bucket_delta": bucket_delta,
+                "reason_totals": reason_totals,
+                "reason_delta": reason_delta,
                 "new_sells": 0,
                 "start_idx": start_idx,
                 "end_idx": end_idx,
@@ -344,6 +367,24 @@ class ManagerLearningStore:
             cur["realized"] = round(_safe_float(cur.get("realized"), 0.0) + _safe_float(add.get("realized"), 0.0), 4)
             bucket_stats[bucket] = cur
         self._cache["time_bucket_stats"] = bucket_stats
+        reason_totals = dict(sleeve_attr.get("reason_totals") or {})
+        normalized_reason_stats: dict[str, dict[str, float]] = {}
+        for reason, row in reason_totals.items():
+            if not isinstance(row, dict):
+                continue
+            sells = int(_safe_float(row.get("sells"), 0.0))
+            wins = int(_safe_float(row.get("wins"), 0.0))
+            realized = round(_safe_float(row.get("realized"), 0.0), 4)
+            win_rate = round((wins / sells) * 100.0, 2) if sells > 0 else 0.0
+            avg_realized = round(realized / sells, 4) if sells > 0 else 0.0
+            normalized_reason_stats[str(reason)] = {
+                "sells": sells,
+                "wins": wins,
+                "realized": realized,
+                "win_rate_pct": win_rate,
+                "avg_realized": avg_realized,
+            }
+        self._cache["reason_code_stats"] = normalized_reason_stats
         self._save()
 
         return {
@@ -358,6 +399,8 @@ class ManagerLearningStore:
             "sleeve_realized_totals": self._cache.get("sleeve_realized_totals") or {},
             "time_bucket_delta": sleeve_attr.get("bucket_delta") or {},
             "time_bucket_stats": self._cache.get("time_bucket_stats") or {},
+            "reason_code_delta": sleeve_attr.get("reason_delta") or {},
+            "reason_code_stats": self._cache.get("reason_code_stats") or {},
             "new_sell_trades": int(sleeve_attr.get("new_sells") or 0),
             "buy_fills": int(buy_fills),
             "sell_fills": int(sell_fills),
@@ -380,6 +423,15 @@ class PerformanceFeedbackAgent(BaseAgent):
         )
         snap = self.learning_store.snapshot()
         sleeve_bias = dict(snap.get("sleeve_bias") or {})
+        reason_stats = dict(snap.get("reason_code_stats") or {})
+        ranked = [
+            (code, dict(row))
+            for code, row in reason_stats.items()
+            if isinstance(row, dict) and int(_safe_float(row.get("sells"), 0.0)) > 0
+        ]
+        ranked.sort(key=lambda x: _safe_float(x[1].get("avg_realized"), 0.0), reverse=True)
+        top_reason = ranked[0][0] if ranked else ""
+        worst_reason = ranked[-1][0] if ranked else ""
         summary = "bias trend={trend:.2f} scalp={scalping:.2f} def={defensive:.2f} order=active".format(
             trend=_safe_float(sleeve_bias.get("trend"), 1.0),
             scalping=_safe_float(sleeve_bias.get("scalping"), 1.0),
@@ -395,6 +447,9 @@ class PerformanceFeedbackAgent(BaseAgent):
                     "scalping": _safe_float(sleeve_bias.get("scalping"), 1.0),
                     "defensive": _safe_float(sleeve_bias.get("defensive"), 1.0),
                 },
+                "top_reason_code": top_reason,
+                "worst_reason_code": worst_reason,
+                "reason_code_stats": reason_stats,
                 "updated_at": str(snap.get("updated_at") or ""),
             },
         )
@@ -895,21 +950,38 @@ class ManagerAgent:
         if bucket_sells >= 3 and bucket_realized < 0:
             urgency = "high"
 
+        reason_stats = dict(latest_learning.get("reason_code_stats") or {})
+        worst_reason = ""
+        worst_avg = 0.0
+        for reason, row in reason_stats.items():
+            if not isinstance(row, dict):
+                continue
+            sells = int(_safe_float(row.get("sells"), 0.0))
+            avg_realized = _safe_float(row.get("avg_realized"), 0.0)
+            if sells < 3:
+                continue
+            if (worst_reason == "") or (avg_realized < worst_avg):
+                worst_reason = str(reason)
+                worst_avg = avg_realized
+        if worst_reason and worst_avg < 0:
+            urgency = "high"
+
         bucket_hint = f"bucket={current_bucket} realized={bucket_realized:+.0f} sells={bucket_sells}"
+        reason_hint = f"worst_reason={worst_reason}:{worst_avg:+.1f}" if worst_reason else "worst_reason=NA"
 
         prefix = f"[{urgency}]"
         symbol = str(state.selected_symbol or "current_target")
         return {
-            "market_analysis": f"{prefix} Refresh regime/flow for {symbol} and detect edge shifts. {bucket_hint}",
-            "investment_strategy": f"{prefix} Update action hint targeting higher expected return with controlled risk. {bucket_hint}",
-            "risk_guard": f"{prefix} Re-check heat, stale data, and halt guards before next decisions. {bucket_hint}",
+            "market_analysis": f"{prefix} Refresh regime/flow for {symbol} and detect edge shifts. {bucket_hint} {reason_hint}",
+            "investment_strategy": f"{prefix} Update action hint targeting higher expected return with controlled risk. {bucket_hint} {reason_hint}",
+            "risk_guard": f"{prefix} Re-check heat, stale data, and halt guards before next decisions. {bucket_hint} {reason_hint}",
             "execution": f"{prefix} Keep runtime healthy and report execution degradation immediately.",
-            "performance_feedback": f"{prefix} Learn from recent return/risk outcomes and tune sleeve biases. {bucket_hint}",
-            "capital_allocation": f"{prefix} Rebalance trend/scalping/defensive sleeves for risk-adjusted performance. {bucket_hint}",
-            "invest_trend": f"{prefix} Focus on quality trend setups; avoid weak momentum entries. {bucket_hint}",
-            "invest_scalping": f"{prefix} Hunt short-horizon trades only when spread/risk profile is acceptable. {bucket_hint}",
-            "invest_defensive": f"{prefix} Preserve capital and maintain downside buffer during stress. {bucket_hint}",
-            "order_policy": f"{prefix} Enforce ALLOW/BLOCK gate to avoid low-conviction or high-risk orders. {bucket_hint}",
+            "performance_feedback": f"{prefix} Learn from recent return/risk outcomes and tune sleeve biases. {bucket_hint} {reason_hint}",
+            "capital_allocation": f"{prefix} Rebalance trend/scalping/defensive sleeves for risk-adjusted performance. {bucket_hint} {reason_hint}",
+            "invest_trend": f"{prefix} Focus on quality trend setups; avoid weak momentum entries. {bucket_hint} {reason_hint}",
+            "invest_scalping": f"{prefix} Hunt short-horizon trades only when spread/risk profile is acceptable. {bucket_hint} {reason_hint}",
+            "invest_defensive": f"{prefix} Preserve capital and maintain downside buffer during stress. {bucket_hint} {reason_hint}",
+            "order_policy": f"{prefix} Enforce ALLOW/BLOCK gate to avoid low-conviction or high-risk orders. {bucket_hint} {reason_hint}",
         }
 
     @staticmethod

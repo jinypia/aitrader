@@ -326,6 +326,7 @@ Manager command model:
 - Manager reports now include a `learning` snapshot with latest sleeve attribution deltas and bias updates.
 - `ai_sleeve_reason` now uses standardized codes (e.g., `RSN_STRATEGY_MODE_SCALPING`, `RSN_KEYWORD_DEFENSIVE_RISK_OFF`).
 - Learning state includes time-bucket stats (`opening`/`regular`/`after`/`off`) and manager work orders adapt using those stats.
+- Learning state also tracks `reason_code_stats` (sells/wins/win_rate/avg_realized by reason code), and manager urgency reflects poor-performing reason codes.
 
 Tune event cadence:
 
