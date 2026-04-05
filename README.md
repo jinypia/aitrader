@@ -338,6 +338,8 @@ Manager command model:
 - Manager learning also persists `daily_outlook_history` by date so the manager can track expected-profit outlook day by day.
 - Manager reports now include a 7-day outlook trend signal (`daily_outlook_trend`) with direction (`up`/`flat`/`down`) and rate delta.
 - Slack manager reports raise an alert when trend7 flips from `up` to `down` while quality remains weak.
+- Runtime parameter tuning is now agent-suggested and manager-approved automatically; manager applies only when confidence/risk gates pass.
+- Hourly manager reports are now change-focused: repeated unchanged agent content is suppressed (`no_material_changes` when nothing changed).
 
 Runtime tuning keys (in `.env` or `data/runtime_config.json`):
 

@@ -13,7 +13,7 @@ from typing import Any
 import requests
 
 from bot_runtime import BotState, run_bot
-from config import load_settings
+from config import load_settings, save_runtime_overrides
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -1041,6 +1041,49 @@ class ReportingAgent(BaseAgent):
             "flip_up_to_down": flip_up_to_down,
         }
 
+    def _read_last_snapshot(self) -> dict[str, Any]:
+        try:
+            if not self.report_path.exists():
+                return {}
+            parsed = json.loads(self.report_path.read_text(encoding="utf-8"))
+            if isinstance(parsed, list) and parsed:
+                last = parsed[-1]
+                if isinstance(last, dict):
+                    return last
+        except Exception:
+            pass
+        return {}
+
+    @staticmethod
+    def _changed_agent_outputs(
+        outputs: list[AgentOutput],
+        prev_snapshot: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        prev_items = []
+        if isinstance(prev_snapshot, dict):
+            prev_items = list(prev_snapshot.get("agent_outputs_full") or prev_snapshot.get("agent_outputs") or [])
+        prev_summary_by_agent: dict[str, str] = {}
+        for row in prev_items:
+            if not isinstance(row, dict):
+                continue
+            agent = str(row.get("agent") or "").strip()
+            if not agent:
+                continue
+            prev_summary_by_agent[agent] = str(row.get("summary") or "")
+
+        changed: list[dict[str, Any]] = []
+        for o in outputs:
+            prev_summary = prev_summary_by_agent.get(str(o.agent), None)
+            if prev_summary is None or prev_summary != str(o.summary):
+                changed.append(
+                    {
+                        "agent": o.agent,
+                        "summary": o.summary,
+                        "payload": o.payload,
+                    }
+                )
+        return changed
+
     def execute(self, state: BotState, context: dict[str, Any]) -> AgentOutput:
         outputs: list[AgentOutput] = list(context.get("agent_outputs") or [])
         report_kind = str(context.get("report_kind") or "hourly")
@@ -1049,6 +1092,16 @@ class ReportingAgent(BaseAgent):
         daily_outlook = dict(learning.get("daily_outlook") or {})
         daily_outlook_history = dict(learning.get("daily_outlook_history") or {})
         daily_trend = self._build_outlook_trend(daily_outlook_history)
+        prev_snapshot = self._read_last_snapshot()
+        changed_agent_outputs = self._changed_agent_outputs(outputs, prev_snapshot)
+        report_agent_outputs = changed_agent_outputs if report_kind == "hourly" else [
+            {
+                "agent": o.agent,
+                "summary": o.summary,
+                "payload": o.payload,
+            }
+            for o in outputs
+        ]
         now = datetime.now().isoformat(timespec="seconds")
         snapshot = {
             "timestamp": now,
@@ -1068,7 +1121,10 @@ class ReportingAgent(BaseAgent):
             },
             "learning": learning,
             "daily_outlook_trend": daily_trend,
-            "agent_outputs": [
+            "change_count": len(changed_agent_outputs),
+            "agent_outputs": report_agent_outputs,
+            "changed_agent_outputs": changed_agent_outputs,
+            "agent_outputs_full": [
                 {
                     "agent": o.agent,
                     "summary": o.summary,
@@ -1079,7 +1135,13 @@ class ReportingAgent(BaseAgent):
         }
         self._append_report(snapshot)
 
-        one_line = " | ".join(f"{o.agent}:{o.summary}" for o in outputs)
+        one_line = " | ".join(
+            f"{row.get('agent')}:{row.get('summary')}"
+            for row in report_agent_outputs
+            if isinstance(row, dict)
+        )
+        if not one_line:
+            one_line = "no_material_changes"
         trigger_part = f" triggers={','.join(triggers)}" if triggers else ""
         outlook_label = str(daily_outlook.get("label") or "INSUFFICIENT_DATA")
         outlook_rate = _safe_float(daily_outlook.get("expected_daily_profit_rate_pct"), 0.0)
@@ -1165,6 +1227,79 @@ class OrderPolicyAgent(BaseAgent):
         )
 
 
+class ParameterTuningAgent(BaseAgent):
+    name = "param_tuning"
+
+    def execute(self, state: BotState, context: dict[str, Any]) -> AgentOutput:
+        manager_order = _manager_order(
+            context,
+            self.name,
+            "Suggest compact runtime parameter updates that improve expected return without increasing risk.",
+        )
+        learning = dict(context.get("learning") or {})
+        by_name: dict[str, AgentOutput] = dict(context.get("by_name") or {})
+        risk_payload = (by_name.get("risk_guard").payload if by_name.get("risk_guard") else {})
+        outlook = dict(learning.get("daily_outlook") or {})
+        settings = load_settings()
+
+        risk_level = str(risk_payload.get("risk_level") or "LOW")
+        outlook_label = str(outlook.get("label") or "INSUFFICIENT_DATA")
+        quality = _safe_float(outlook.get("market_quality_score"), 0.0)
+        exp_rate = _safe_float(outlook.get("expected_daily_profit_rate_pct"), 0.0)
+        trend = dict(context.get("daily_outlook_trend") or {})
+        trend_dir = str(trend.get("direction") or "flat")
+
+        proposal: dict[str, str] = {}
+        confidence = 0.0
+        rationale = "insufficient_data"
+
+        if risk_level in {"HIGH", "CRITICAL"}:
+            confidence = 0.40
+            rationale = "risk_guard_block"
+        elif outlook_label == "POSITIVE" and quality >= 60.0 and trend_dir in {"up", "flat"}:
+            min_entry_score = _clamp(_safe_float(getattr(settings, "min_entry_score", 0.5), 0.5) - 0.02, 0.25, 0.90)
+            min_momentum = _clamp(_safe_float(getattr(settings, "min_entry_momentum_pct", 0.2), 0.2) - 0.03, -0.20, 1.20)
+            take_partial = _clamp(_safe_float(getattr(settings, "take_profit_partial_ratio", 0.5), 0.5) - 0.02, 0.20, 0.90)
+            proposal = {
+                "MIN_ENTRY_SCORE": f"{min_entry_score:.3f}",
+                "MIN_ENTRY_MOMENTUM_PCT": f"{min_momentum:.3f}",
+                "TAKE_PROFIT_PARTIAL_RATIO": f"{take_partial:.3f}",
+            }
+            confidence = 0.75
+            rationale = "positive_quality_expansion"
+        elif outlook_label in {"CAUTIOUS", "INSUFFICIENT_DATA"} or trend_dir == "down" or exp_rate < 0.0:
+            min_entry_score = _clamp(_safe_float(getattr(settings, "min_entry_score", 0.5), 0.5) + 0.03, 0.25, 0.95)
+            min_momentum = _clamp(_safe_float(getattr(settings, "min_entry_momentum_pct", 0.2), 0.2) + 0.05, -0.20, 1.20)
+            take_partial = _clamp(_safe_float(getattr(settings, "take_profit_partial_ratio", 0.5), 0.5) + 0.03, 0.20, 0.95)
+            proposal = {
+                "MIN_ENTRY_SCORE": f"{min_entry_score:.3f}",
+                "MIN_ENTRY_MOMENTUM_PCT": f"{min_momentum:.3f}",
+                "TAKE_PROFIT_PARTIAL_RATIO": f"{take_partial:.3f}",
+            }
+            confidence = 0.70 if quality >= 30.0 else 0.62
+            rationale = "defensive_tightening"
+        else:
+            confidence = 0.55
+            rationale = "hold_settings"
+
+        summary = f"proposal={len(proposal)} confidence={confidence:.2f} rationale={rationale}"
+        return AgentOutput(
+            agent=self.name,
+            summary=f"{summary} order=active",
+            payload={
+                "manager_order": manager_order,
+                "proposal": proposal,
+                "confidence": round(confidence, 4),
+                "rationale": rationale,
+                "risk_level": risk_level,
+                "outlook_label": outlook_label,
+                "quality": round(quality, 2),
+                "exp_rate_pct": round(exp_rate, 4),
+                "trend_direction": trend_dir,
+            },
+        )
+
+
 class ManagerSlackNotifier:
     def __init__(self, enabled: bool, webhook_url: str, timeout_sec: float = 6.0) -> None:
         self.enabled = bool(enabled)
@@ -1243,9 +1378,68 @@ class ManagerAgent:
             DefensiveInvestAgent(),
         ]
         self.order_policy_agent = OrderPolicyAgent()
+        self.tuning_agent = ParameterTuningAgent()
         self.reporting_agent = ReportingAgent(report_path=report_path)
         self.slack_notifier = ManagerSlackNotifier(enabled=slack_enabled, webhook_url=slack_webhook_url)
         self.event_report_cooldown_seconds = max(10, int(event_report_cooldown_seconds))
+
+    @staticmethod
+    def _apply_tuning_decision(
+        tuning_output: AgentOutput,
+        by_name: dict[str, AgentOutput],
+    ) -> dict[str, Any]:
+        payload = tuning_output.payload if isinstance(tuning_output.payload, dict) else {}
+        proposal = dict(payload.get("proposal") or {})
+        confidence = _safe_float(payload.get("confidence"), 0.0)
+        risk_level = str(payload.get("risk_level") or "LOW")
+
+        decision = {
+            "status": "rejected",
+            "applied": False,
+            "applied_keys": [],
+            "reason": "no_proposal",
+            "confidence": round(confidence, 4),
+        }
+        if not proposal:
+            return decision
+
+        if risk_level in {"HIGH", "CRITICAL"}:
+            decision["reason"] = "risk_guard_block"
+            return decision
+
+        if confidence < 0.62:
+            decision["reason"] = "low_confidence"
+            return decision
+
+        settings = load_settings()
+        current_values = {
+            "MIN_ENTRY_SCORE": _safe_float(getattr(settings, "min_entry_score", 0.5), 0.5),
+            "MIN_ENTRY_MOMENTUM_PCT": _safe_float(getattr(settings, "min_entry_momentum_pct", 0.2), 0.2),
+            "TAKE_PROFIT_PARTIAL_RATIO": _safe_float(getattr(settings, "take_profit_partial_ratio", 0.5), 0.5),
+        }
+
+        apply_updates: dict[str, str] = {}
+        for key, val in proposal.items():
+            if key not in current_values:
+                continue
+            new_v = _safe_float(val, current_values[key])
+            if abs(new_v - current_values[key]) >= 0.005:
+                apply_updates[key] = f"{new_v:.3f}"
+
+        if not apply_updates:
+            decision["reason"] = "no_material_delta"
+            return decision
+
+        try:
+            save_runtime_overrides(apply_updates)
+            decision["status"] = "applied"
+            decision["applied"] = True
+            decision["applied_keys"] = sorted(apply_updates.keys())
+            decision["reason"] = "manager_approved"
+            return decision
+        except Exception as exc:
+            decision["reason"] = f"apply_error:{exc}"
+            return decision
 
     @staticmethod
     def _build_work_orders(
@@ -1306,6 +1500,7 @@ class ManagerAgent:
             "invest_scalping": f"{prefix} Hunt short-horizon trades only when spread/risk profile is acceptable. {bucket_hint} {reason_hint}",
             "invest_defensive": f"{prefix} Preserve capital and maintain downside buffer during stress. {bucket_hint} {reason_hint}",
             "order_policy": f"{prefix} Enforce ALLOW/BLOCK gate to avoid low-conviction or high-risk orders. {bucket_hint} {reason_hint}",
+            "param_tuning": f"{prefix} Propose compact parameter updates; manager will approve only if confidence/risk gates pass. {bucket_hint} {reason_hint}",
         }
 
     @staticmethod
@@ -1315,6 +1510,8 @@ class ManagerAgent:
         risk = by_name.get("risk_guard").payload if by_name.get("risk_guard") else {}
         alloc = by_name.get("capital_allocation").payload if by_name.get("capital_allocation") else {}
         policy = by_name.get("order_policy").payload if by_name.get("order_policy") else {}
+        tuning = by_name.get("param_tuning").payload if by_name.get("param_tuning") else {}
+        tuning_decision = dict(tuning.get("decision") or {})
         weights = dict(alloc.get("weights") or {})
         return {
             "symbol": str(state.selected_symbol or ""),
@@ -1324,6 +1521,7 @@ class ManagerAgent:
             "policy": str(policy.get("policy") or "ALLOW"),
             "policy_reason": str(policy.get("reason") or ""),
             "action_hint": str(invest.get("action_hint") or "HOLD"),
+            "tuning_status": str(tuning_decision.get("status") or "na"),
             "trend_w": round(_safe_float(weights.get("trend"), 0.0), 2),
             "scalp_w": round(_safe_float(weights.get("scalping"), 0.0), 2),
             "def_w": round(_safe_float(weights.get("defensive"), 0.0), 2),
@@ -1341,6 +1539,7 @@ class ManagerAgent:
             "policy": "policy_change",
             "policy_reason": "policy_reason_change",
             "action_hint": "action_hint_change",
+            "tuning_status": "tuning_change",
             "trend_w": "allocation_change",
             "scalp_w": "allocation_change",
             "def_w": "allocation_change",
@@ -1446,6 +1645,47 @@ class ManagerAgent:
 
             learn_result = self.learning_store.update_from_cycle(state, by_name)
             latest_learning = learn_result
+
+            trend_for_tuning = ReportingAgent._build_outlook_trend(dict(latest_learning.get("daily_outlook_history") or {}))
+            try:
+                tuning_output = self.tuning_agent.execute(
+                    state,
+                    {
+                        "by_name": by_name,
+                        "bot_thread": bot_thread,
+                        "work_orders": work_orders,
+                        "learning": latest_learning,
+                        "daily_outlook_trend": trend_for_tuning,
+                    },
+                )
+            except Exception as exc:
+                tuning_output = AgentOutput(
+                    agent=self.tuning_agent.name,
+                    summary=f"error={exc}",
+                    payload={"error": str(exc)},
+                )
+
+            tuning_decision = self._apply_tuning_decision(tuning_output, by_name)
+            tuning_payload = dict(tuning_output.payload if isinstance(tuning_output.payload, dict) else {})
+            tuning_payload["decision"] = tuning_decision
+            tuning_output = AgentOutput(
+                agent=tuning_output.agent,
+                summary=(
+                    f"{tuning_output.summary} decision={tuning_decision.get('status')} "
+                    f"reason={tuning_decision.get('reason')}"
+                ).strip(),
+                payload=tuning_payload,
+            )
+            outputs.append(tuning_output)
+            by_name[tuning_output.agent] = tuning_output
+
+            if bool(tuning_decision.get("applied")):
+                logging.info(
+                    "MANAGER_TUNING_APPLIED keys=%s confidence=%.2f reason=%s",
+                    ",".join(list(tuning_decision.get("applied_keys") or [])),
+                    _safe_float(tuning_decision.get("confidence"), 0.0),
+                    str(tuning_decision.get("reason") or ""),
+                )
             if learn_result.get("reasons"):
                 logging.info(
                     "MANAGER_LEARN delta=%.4f realized_delta=%.2f sleeve_delta=%s reason_signal=%s new_sells=%s fills(b=%s,s=%s) reasons=%s bias=%s",
