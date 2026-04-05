@@ -277,6 +277,7 @@ Hierarchy (recommended):
 - Market Analysis Agent: evaluates regime, confidence, and session conditions
 - Investment Strategy Agent: converts analysis + selection quality into action hints
 - Risk Guard Agent: checks heat, stale data, and halt conditions
+- Performance Feedback Agent: learns from realized outcomes and updates sleeve biases over time
 - Capital Allocation Agent: dynamically splits budget across invest-agent pods
 - Trend Invest Agent: manages trend-following allocation slice
 - Scalping Invest Agent: manages short-horizon allocation slice
@@ -314,6 +315,7 @@ Manager command model:
 - On every cycle, the manager issues purpose-specific work orders to each agent.
 - Agents acknowledge manager directives in their payload (`manager_order`) and execute with role-specific logic.
 - When important signals change, manager raises urgency and updates directives before the next decision/report.
+- Learning state is persisted in `data/manager_learning_state.json` and used to tune allocation bias.
 
 Tune event cadence:
 

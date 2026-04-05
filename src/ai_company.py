@@ -48,6 +48,148 @@ def _manager_order(context: dict[str, Any], agent_name: str, default: str) -> st
     return default
 
 
+class ManagerLearningStore:
+    def __init__(self, path: str = "data/manager_learning_state.json") -> None:
+        self.path = Path(path)
+        self._cache = self._load()
+
+    def _default_state(self) -> dict[str, Any]:
+        return {
+            "sleeve_bias": {
+                "trend": 1.0,
+                "scalping": 1.0,
+                "defensive": 1.0,
+            },
+            "last_total_return_pct": 0.0,
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+        }
+
+    def _load(self) -> dict[str, Any]:
+        try:
+            if not self.path.exists():
+                return self._default_state()
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                return self._default_state()
+            base = self._default_state()
+            base.update(payload)
+            return base
+        except Exception:
+            return self._default_state()
+
+    def _save(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._cache["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        self.path.write_text(json.dumps(self._cache, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    def snapshot(self) -> dict[str, Any]:
+        return dict(self._cache)
+
+    def _bias(self) -> dict[str, float]:
+        raw = dict(self._cache.get("sleeve_bias") or {})
+        return {
+            "trend": _safe_float(raw.get("trend"), 1.0),
+            "scalping": _safe_float(raw.get("scalping"), 1.0),
+            "defensive": _safe_float(raw.get("defensive"), 1.0),
+        }
+
+    def update_from_cycle(self, state: BotState, by_name: dict[str, AgentOutput]) -> dict[str, Any]:
+        bias = self._bias()
+        current_return = _safe_float(state.total_return_pct, 0.0)
+        last_return = _safe_float(self._cache.get("last_total_return_pct"), 0.0)
+        pnl_delta = current_return - last_return
+
+        risk_payload = (by_name.get("risk_guard").payload if by_name.get("risk_guard") else {})
+        trend_payload = (by_name.get("invest_trend").payload if by_name.get("invest_trend") else {})
+        scalp_payload = (by_name.get("invest_scalping").payload if by_name.get("invest_scalping") else {})
+        def_payload = (by_name.get("invest_defensive").payload if by_name.get("invest_defensive") else {})
+
+        risk_level = str(risk_payload.get("risk_level") or "LOW")
+        trend_signal = str(trend_payload.get("signal") or "WAIT")
+        scalp_signal = str(scalp_payload.get("signal") or "STANDBY")
+        def_posture = str(def_payload.get("posture") or "BUFFER")
+
+        reasons: list[str] = []
+
+        if pnl_delta >= 0.03:
+            if trend_signal == "ACCUMULATE":
+                bias["trend"] += 0.03
+                reasons.append("reward_trend")
+            if scalp_signal == "TRADE":
+                bias["scalping"] += 0.03
+                reasons.append("reward_scalping")
+            if not reasons:
+                bias["defensive"] += 0.02
+                reasons.append("reward_defensive")
+        elif pnl_delta <= -0.03:
+            if trend_signal == "ACCUMULATE":
+                bias["trend"] -= 0.04
+                reasons.append("penalize_trend")
+            if scalp_signal == "TRADE":
+                bias["scalping"] -= 0.04
+                reasons.append("penalize_scalping")
+            bias["defensive"] += 0.03
+            reasons.append("boost_defensive")
+
+        if risk_level in {"HIGH", "CRITICAL"}:
+            bias["trend"] -= 0.02
+            bias["scalping"] -= 0.02
+            bias["defensive"] += 0.03
+            reasons.append("risk_shift")
+
+        if def_posture == "HEDGE":
+            bias["defensive"] += 0.01
+            reasons.append("hedge_bias")
+
+        for key in ("trend", "scalping", "defensive"):
+            bias[key] = round(_clamp(_safe_float(bias.get(key), 1.0), 0.60, 1.80), 4)
+
+        self._cache["sleeve_bias"] = bias
+        self._cache["last_total_return_pct"] = current_return
+        self._save()
+
+        return {
+            "sleeve_bias": bias,
+            "pnl_delta_pct": round(pnl_delta, 4),
+            "reasons": reasons,
+            "risk_level": risk_level,
+        }
+
+
+class PerformanceFeedbackAgent(BaseAgent):
+    name = "performance_feedback"
+
+    def __init__(self, learning_store: ManagerLearningStore) -> None:
+        self.learning_store = learning_store
+
+    def execute(self, state: BotState, context: dict[str, Any]) -> AgentOutput:
+        manager_order = _manager_order(
+            context,
+            self.name,
+            "Assess recent outcomes and adjust sleeve biases to improve risk-adjusted return.",
+        )
+        snap = self.learning_store.snapshot()
+        sleeve_bias = dict(snap.get("sleeve_bias") or {})
+        summary = "bias trend={trend:.2f} scalp={scalping:.2f} def={defensive:.2f} order=active".format(
+            trend=_safe_float(sleeve_bias.get("trend"), 1.0),
+            scalping=_safe_float(sleeve_bias.get("scalping"), 1.0),
+            defensive=_safe_float(sleeve_bias.get("defensive"), 1.0),
+        )
+        return AgentOutput(
+            agent=self.name,
+            summary=summary,
+            payload={
+                "manager_order": manager_order,
+                "sleeve_bias": {
+                    "trend": _safe_float(sleeve_bias.get("trend"), 1.0),
+                    "scalping": _safe_float(sleeve_bias.get("scalping"), 1.0),
+                    "defensive": _safe_float(sleeve_bias.get("defensive"), 1.0),
+                },
+                "updated_at": str(snap.get("updated_at") or ""),
+            },
+        )
+
+
 class MarketAnalysisAgent(BaseAgent):
     name = "market_analysis"
 
@@ -154,6 +296,7 @@ class CapitalAllocationAgent(BaseAgent):
         risk_payload = (by_name.get("risk_guard").payload if by_name.get("risk_guard") else {})
         market_payload = (by_name.get("market_analysis").payload if by_name.get("market_analysis") else {})
         invest_payload = (by_name.get("investment_strategy").payload if by_name.get("investment_strategy") else {})
+        feedback_payload = (by_name.get("performance_feedback").payload if by_name.get("performance_feedback") else {})
 
         risk_level = str(risk_payload.get("risk_level", "LOW"))
         regime = str(market_payload.get("regime", "UNKNOWN"))
@@ -181,6 +324,11 @@ class CapitalAllocationAgent(BaseAgent):
             weights["trend"] = _clamp(weights["trend"] + 0.05, 0.0, 0.8)
             weights["defensive"] = _clamp(weights["defensive"] - 0.05, 0.0, 0.9)
 
+        sleeve_bias = dict(feedback_payload.get("sleeve_bias") or {})
+        weights["trend"] *= _safe_float(sleeve_bias.get("trend"), 1.0)
+        weights["scalping"] *= _safe_float(sleeve_bias.get("scalping"), 1.0)
+        weights["defensive"] *= _safe_float(sleeve_bias.get("defensive"), 1.0)
+
         total = sum(weights.values()) or 1.0
         for key in list(weights.keys()):
             weights[key] = round(weights[key] / total, 4)
@@ -196,6 +344,11 @@ class CapitalAllocationAgent(BaseAgent):
                 "regime": regime,
                 "confidence": confidence,
                 "action_hint": action_hint,
+                "sleeve_bias": {
+                    "trend": round(_safe_float(sleeve_bias.get("trend"), 1.0), 4),
+                    "scalping": round(_safe_float(sleeve_bias.get("scalping"), 1.0), 4),
+                    "defensive": round(_safe_float(sleeve_bias.get("defensive"), 1.0), 4),
+                },
             },
         )
 
@@ -484,12 +637,14 @@ class ManagerAgent:
     ) -> None:
         self.report_interval_seconds = max(60, int(report_interval_seconds))
         self.cycle_seconds = max(5, int(cycle_seconds))
+        self.learning_store = ManagerLearningStore()
         self.core_agents: list[BaseAgent] = [
             MarketAnalysisAgent(),
             InvestmentStrategyAgent(),
             RiskGuardAgent(),
             ExecutionAgent(),
         ]
+        self.feedback_agent = PerformanceFeedbackAgent(self.learning_store)
         self.capital_agent = CapitalAllocationAgent()
         self.invest_agents: list[BaseAgent] = [
             TrendInvestAgent(),
@@ -517,6 +672,7 @@ class ManagerAgent:
             "investment_strategy": f"{prefix} Update action hint targeting higher expected return with controlled risk.",
             "risk_guard": f"{prefix} Re-check heat, stale data, and halt guards before next decisions.",
             "execution": f"{prefix} Keep runtime healthy and report execution degradation immediately.",
+            "performance_feedback": f"{prefix} Learn from recent return/risk outcomes and tune sleeve biases.",
             "capital_allocation": f"{prefix} Rebalance trend/scalping/defensive sleeves for risk-adjusted performance.",
             "invest_trend": f"{prefix} Focus on quality trend setups; avoid weak momentum entries.",
             "invest_scalping": f"{prefix} Hunt short-horizon trades only when spread/risk profile is acceptable.",
@@ -601,6 +757,20 @@ class ManagerAgent:
                 by_name[output.agent] = output
 
             try:
+                feedback_output = self.feedback_agent.execute(
+                    state,
+                    {"by_name": by_name, "bot_thread": bot_thread, "work_orders": work_orders},
+                )
+            except Exception as exc:
+                feedback_output = AgentOutput(
+                    agent=self.feedback_agent.name,
+                    summary=f"error={exc}",
+                    payload={"error": str(exc)},
+                )
+            outputs.append(feedback_output)
+            by_name[feedback_output.agent] = feedback_output
+
+            try:
                 alloc_output = self.capital_agent.execute(
                     state,
                     {"by_name": by_name, "bot_thread": bot_thread, "work_orders": work_orders},
@@ -644,6 +814,15 @@ class ManagerAgent:
                 )
             outputs.append(policy_output)
             by_name[policy_output.agent] = policy_output
+
+            learn_result = self.learning_store.update_from_cycle(state, by_name)
+            if learn_result.get("reasons"):
+                logging.info(
+                    "MANAGER_LEARN delta=%.4f reasons=%s bias=%s",
+                    _safe_float(learn_result.get("pnl_delta_pct"), 0.0),
+                    ",".join(list(learn_result.get("reasons") or [])),
+                    learn_result.get("sleeve_bias"),
+                )
 
             curr_vector = self._extract_event_vector(state, by_name)
             triggers = self._diff_triggers(prev_vector, curr_vector)
