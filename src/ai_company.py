@@ -638,6 +638,7 @@ class ReportingAgent(BaseAgent):
         outputs: list[AgentOutput] = list(context.get("agent_outputs") or [])
         report_kind = str(context.get("report_kind") or "hourly")
         triggers = list(context.get("triggers") or [])
+        learning = dict(context.get("learning") or {})
         now = datetime.now().isoformat(timespec="seconds")
         snapshot = {
             "timestamp": now,
@@ -655,6 +656,7 @@ class ReportingAgent(BaseAgent):
                 "total_pnl": _safe_float(state.total_pnl),
                 "total_return_pct": _safe_float(state.total_return_pct),
             },
+            "learning": learning,
             "agent_outputs": [
                 {
                     "agent": o.agent,
@@ -883,6 +885,7 @@ class ManagerAgent:
         next_report_at = time.time()
         last_event_report_at = 0.0
         prev_vector: dict[str, Any] = {}
+        latest_learning: dict[str, Any] = {}
         logging.info(
             "MANAGER_AGENT online cycle=%ss report_interval=%ss",
             self.cycle_seconds,
@@ -972,6 +975,7 @@ class ManagerAgent:
             by_name[policy_output.agent] = policy_output
 
             learn_result = self.learning_store.update_from_cycle(state, by_name)
+            latest_learning = learn_result
             if learn_result.get("reasons"):
                 logging.info(
                     "MANAGER_LEARN delta=%.4f realized_delta=%.2f sleeve_delta=%s new_sells=%s fills(b=%s,s=%s) reasons=%s bias=%s",
@@ -992,7 +996,12 @@ class ManagerAgent:
                 if (time.time() - last_event_report_at) >= self.event_report_cooldown_seconds:
                     event_report = self.reporting_agent.execute(
                         state,
-                        {"agent_outputs": outputs, "report_kind": "event", "triggers": triggers},
+                        {
+                            "agent_outputs": outputs,
+                            "report_kind": "event",
+                            "triggers": triggers,
+                            "learning": latest_learning,
+                        },
                     )
                     self.slack_notifier.send_report(event_report)
                     last_event_report_at = time.time()
@@ -1001,7 +1010,12 @@ class ManagerAgent:
             if time.time() >= next_report_at:
                 report_output = self.reporting_agent.execute(
                     state,
-                    {"agent_outputs": outputs, "report_kind": "hourly", "triggers": []},
+                    {
+                        "agent_outputs": outputs,
+                        "report_kind": "hourly",
+                        "triggers": [],
+                        "learning": latest_learning,
+                    },
                 )
                 logging.info("MANAGER_HOURLY_REPORT %s", report_output.summary)
                 self.slack_notifier.send_report(report_output)

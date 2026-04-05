@@ -322,6 +322,8 @@ Manager command model:
   - `sleeve_realized_totals`
   - cycle-level `sleeve_realized_delta`
 - Runtime now writes explicit `ai_sleeve` tags on fills (`trend`/`scalping`/`defensive`) to improve attribution accuracy.
+- Runtime also stores `ai_sleeve_reason` (classification rationale) on order journal and ledger trades.
+- Manager reports now include a `learning` snapshot with latest sleeve attribution deltas and bias updates.
 
 Tune event cadence:
 
