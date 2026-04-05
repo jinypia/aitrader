@@ -81,6 +81,7 @@ class ManagerLearningStore:
                 "off": {"sells": 0, "wins": 0, "realized": 0.0},
             },
             "reason_code_stats": {},
+            "reason_code_ema": {},
             "updated_at": datetime.now().isoformat(timespec="seconds"),
         }
 
@@ -352,7 +353,21 @@ class ManagerLearningStore:
         # standardized reason performance, but only when sample size is sufficient.
         reason_delta = dict(sleeve_attr.get("reason_delta") or {})
         reason_totals = dict(sleeve_attr.get("reason_totals") or {})
+        reason_ema = dict(self._cache.get("reason_code_ema") or {})
         reason_signal_summary: dict[str, float] = {"trend": 0.0, "scalping": 0.0, "defensive": 0.0}
+        ema_alpha = 0.25
+
+        # Update EMA with recent reason performance (delta window).
+        for code, row in reason_delta.items():
+            if not isinstance(row, dict):
+                continue
+            sells = int(_safe_float(row.get("sells"), 0.0))
+            if sells <= 0:
+                continue
+            delta_avg = _safe_float(row.get("realized"), 0.0) / max(1, sells)
+            prev_ema = _safe_float(reason_ema.get(code), delta_avg)
+            reason_ema[code] = round((ema_alpha * delta_avg) + ((1.0 - ema_alpha) * prev_ema), 6)
+
         for code, row in reason_delta.items():
             if not isinstance(row, dict):
                 continue
@@ -360,6 +375,8 @@ class ManagerLearningStore:
             if sells <= 0:
                 continue
             avg_realized = _safe_float(row.get("realized"), 0.0) / max(1, sells)
+            ema_realized = _safe_float(reason_ema.get(code), avg_realized)
+            blended_realized = (0.6 * avg_realized) + (0.4 * ema_realized)
 
             hist_row = dict(reason_totals.get(code) or {})
             hist_sells = int(_safe_float(hist_row.get("sells"), 0.0))
@@ -377,7 +394,7 @@ class ManagerLearningStore:
             # Convert expectancy into bounded adjustment with confidence weighting.
             if hist_sells >= 3:
                 quality_boost = 0.75 + win_lb
-                raw_adj = (avg_realized / 20000.0) * sample_conf * quality_boost
+                raw_adj = (blended_realized / 20000.0) * sample_conf * quality_boost
                 adj = _clamp(raw_adj, -0.03, 0.03)
                 if abs(adj) >= 0.005:
                     bias[target_sleeve] += adj
@@ -421,6 +438,7 @@ class ManagerLearningStore:
             cur["realized"] = round(_safe_float(cur.get("realized"), 0.0) + _safe_float(add.get("realized"), 0.0), 4)
             bucket_stats[bucket] = cur
         self._cache["time_bucket_stats"] = bucket_stats
+        self._cache["reason_code_ema"] = reason_ema
         reason_totals = dict(sleeve_attr.get("reason_totals") or {})
         normalized_reason_stats: dict[str, dict[str, float]] = {}
         for reason, row in reason_totals.items():
@@ -433,7 +451,9 @@ class ManagerLearningStore:
             avg_realized = round(realized / sells, 4) if sells > 0 else 0.0
             win_rate_lb = round(self._wilson_lower_bound(wins, sells) * 100.0, 2) if sells > 0 else 0.0
             confidence = round(_clamp(float(sells) / 20.0, 0.0, 1.0), 4)
-            expectancy_score = round(avg_realized * confidence, 4)
+            ema_expectancy = round(_safe_float(reason_ema.get(reason), avg_realized), 4)
+            blended_expectancy = round((0.6 * avg_realized) + (0.4 * ema_expectancy), 4)
+            expectancy_score = round(blended_expectancy * confidence, 4)
             normalized_reason_stats[str(reason)] = {
                 "sells": sells,
                 "wins": wins,
@@ -442,6 +462,8 @@ class ManagerLearningStore:
                 "avg_realized": avg_realized,
                 "win_rate_lb_pct": win_rate_lb,
                 "confidence": confidence,
+                "ema_expectancy": ema_expectancy,
+                "blended_expectancy": blended_expectancy,
                 "expectancy_score": expectancy_score,
             }
         self._cache["reason_code_stats"] = normalized_reason_stats
@@ -1018,7 +1040,7 @@ class ManagerAgent:
             if not isinstance(row, dict):
                 continue
             sells = int(_safe_float(row.get("sells"), 0.0))
-            avg_realized = _safe_float(row.get("avg_realized"), 0.0)
+            avg_realized = _safe_float(row.get("blended_expectancy"), _safe_float(row.get("avg_realized"), 0.0))
             if sells < 3:
                 continue
             if (worst_reason == "") or (avg_realized < worst_avg):
