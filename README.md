@@ -267,6 +267,31 @@ For more details, see [docs/CLI_DASHBOARD.md](docs/CLI_DASHBOARD.md).
 
 Run your trading strategy on historical data and watch it execute in real-time.
 
+## 6) AI Company Mode (Manager + Multi-Agent)
+
+You can run the bot as an "AI company" where a manager agent coordinates specialist agents.
+
+Hierarchy (recommended):
+
+- Manager Agent: orchestrates all agents and publishes hourly reports
+- Market Analysis Agent: evaluates regime, confidence, and session conditions
+- Investment Strategy Agent: converts analysis + selection quality into action hints
+- Risk Guard Agent: checks heat, stale data, and halt conditions
+- Execution Agent: monitors runtime health and detects startup/runtime failures
+- Reporting Agent: writes structured manager reports to JSON and log stream
+
+Run it:
+
+```bash
+# Manager + agents + dashboard, hourly reports by default
+python main.py --ai-company --dashboard
+
+# Custom cadence (example: report every 30 minutes)
+python main.py --ai-company --manager-report-minutes 30 --manager-cycle-seconds 15
+```
+
+Hourly reports are saved to `data/hourly_manager_reports.json` (change with `--manager-report-path`).
+
 ### Quick Start
 
 ```bash

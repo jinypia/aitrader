@@ -8,6 +8,7 @@ from pathlib import Path
 
 from bot_runtime import BotState, run_bot
 from cli_dashboard import create_dashboard, RICH_AVAILABLE
+from ai_company import run_ai_company
 
 
 _log_path = Path("data/bot_runtime.log")
@@ -22,7 +23,15 @@ logging.basicConfig(
 )
 
 
-def run(enable_dashboard: bool = False, dashboard_interval: float = 1.0) -> None:
+def run(
+    enable_dashboard: bool = False,
+    dashboard_interval: float = 1.0,
+    *,
+    ai_company_mode: bool = False,
+    manager_report_minutes: int = 60,
+    manager_cycle_seconds: int = 20,
+    manager_report_path: str = "data/hourly_manager_reports.json",
+) -> None:
     """Run the trading bot with optional CLI dashboard.
     
     Args:
@@ -47,7 +56,16 @@ def run(enable_dashboard: bool = False, dashboard_interval: float = 1.0) -> None
                 logging.error("Failed to start dashboard: %s", e)
     
     try:
-        run_bot(stop_event, state)
+        if ai_company_mode:
+            run_ai_company(
+                stop_event,
+                state,
+                report_interval_seconds=max(60, int(manager_report_minutes) * 60),
+                cycle_seconds=max(5, int(manager_cycle_seconds)),
+                report_path=manager_report_path,
+            )
+        else:
+            run_bot(stop_event, state)
     except RuntimeError as exc:
         stop_event.set()
         logging.error("Bot start failed: %s", exc)
@@ -83,10 +101,39 @@ def main() -> None:
         default=1.0,
         help="Dashboard update interval in seconds (default: 1.0)"
     )
+    parser.add_argument(
+        "--ai-company",
+        action="store_true",
+        help="Enable manager-led multi-agent orchestration with hourly reports"
+    )
+    parser.add_argument(
+        "--manager-report-minutes",
+        type=int,
+        default=60,
+        help="Manager report interval in minutes (default: 60)"
+    )
+    parser.add_argument(
+        "--manager-cycle-seconds",
+        type=int,
+        default=20,
+        help="Manager coordination cycle in seconds (default: 20)"
+    )
+    parser.add_argument(
+        "--manager-report-path",
+        default="data/hourly_manager_reports.json",
+        help="Path to store manager reports JSON"
+    )
     
     args = parser.parse_args()
     try:
-        run(enable_dashboard=args.dashboard, dashboard_interval=args.update_interval)
+        run(
+            enable_dashboard=args.dashboard,
+            dashboard_interval=args.update_interval,
+            ai_company_mode=args.ai_company,
+            manager_report_minutes=args.manager_report_minutes,
+            manager_cycle_seconds=args.manager_cycle_seconds,
+            manager_report_path=args.manager_report_path,
+        )
     except RuntimeError as exc:
         logging.error("Run failed: %s", exc)
         sys.exit(1)
