@@ -333,6 +333,14 @@ Manager command model:
 - EMA speed is dynamic per reason code (`ema_alpha`), adapting to sample size and recent volatility.
 - EMA speed is sleeve-aware: trend/scalping reasons adapt faster, defensive reasons adapt slower.
 
+Runtime tuning keys (in `.env` or `data/runtime_config.json`):
+
+- `MANAGER_REASON_EMA_ALPHA_MIN` (default `0.08`)
+- `MANAGER_REASON_EMA_ALPHA_MAX` (default `0.40`)
+- `MANAGER_REASON_EMA_SCALE_TREND` (default `1.05`)
+- `MANAGER_REASON_EMA_SCALE_SCALPING` (default `1.15`)
+- `MANAGER_REASON_EMA_SCALE_DEFENSIVE` (default `0.85`)
+
 Tune event cadence:
 
 ```bash

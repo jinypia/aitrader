@@ -13,6 +13,7 @@ from typing import Any
 import requests
 
 from bot_runtime import BotState, run_bot
+from config import load_settings
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -57,6 +58,32 @@ class ManagerLearningStore:
     ) -> None:
         self.path = Path(path)
         self.ledger_path = Path(ledger_path)
+        self._alpha_cfg = {
+            "min": 0.08,
+            "max": 0.40,
+            "scale": {
+                "trend": 1.05,
+                "scalping": 1.15,
+                "defensive": 0.85,
+            },
+        }
+        try:
+            settings = load_settings()
+            a_min = _clamp(_safe_float(getattr(settings, "manager_reason_ema_alpha_min", 0.08), 0.08), 0.05, 0.45)
+            a_max = _clamp(_safe_float(getattr(settings, "manager_reason_ema_alpha_max", 0.40), 0.40), 0.06, 0.50)
+            if a_max <= a_min:
+                a_max = min(0.50, a_min + 0.05)
+            self._alpha_cfg = {
+                "min": a_min,
+                "max": a_max,
+                "scale": {
+                    "trend": _clamp(_safe_float(getattr(settings, "manager_reason_ema_scale_trend", 1.05), 1.05), 0.60, 1.60),
+                    "scalping": _clamp(_safe_float(getattr(settings, "manager_reason_ema_scale_scalping", 1.15), 1.15), 0.60, 1.80),
+                    "defensive": _clamp(_safe_float(getattr(settings, "manager_reason_ema_scale_defensive", 0.85), 0.85), 0.50, 1.40),
+                },
+            }
+        except Exception:
+            pass
         self._cache = self._load()
 
     def _default_state(self) -> dict[str, Any]:
@@ -281,8 +308,7 @@ class ManagerLearningStore:
             return "defensive"
         return "trend"
 
-    @staticmethod
-    def _dynamic_ema_alpha(delta_avg: float, hist_sells: int, prev_ema: float, target_sleeve: str) -> float:
+    def _dynamic_ema_alpha(self, delta_avg: float, hist_sells: int, prev_ema: float, target_sleeve: str) -> float:
         # More history -> slower updates. Higher volatility -> slower updates.
         # Sign flip vs previous EMA -> slightly faster adaptation.
         sample_conf = _clamp(float(hist_sells) / 20.0, 0.0, 1.0)
@@ -290,13 +316,14 @@ class ManagerLearningStore:
         alpha = 0.35 - (0.20 * sample_conf) - (0.10 * vol_norm)
         if prev_ema * delta_avg < 0:
             alpha += 0.05
-        sleeve_scale = {
-            "trend": 1.05,
-            "scalping": 1.15,
-            "defensive": 0.85,
-        }.get(str(target_sleeve or "").lower(), 1.0)
+        scale_map = dict(self._alpha_cfg.get("scale") or {})
+        sleeve_scale = _safe_float(scale_map.get(str(target_sleeve or "").lower()), 1.0)
         alpha *= sleeve_scale
-        return round(_clamp(alpha, 0.08, 0.40), 4)
+        a_min = _safe_float(self._alpha_cfg.get("min"), 0.08)
+        a_max = _safe_float(self._alpha_cfg.get("max"), 0.40)
+        if a_max <= a_min:
+            a_max = a_min + 0.05
+        return round(_clamp(alpha, a_min, a_max), 4)
 
     def update_from_cycle(self, state: BotState, by_name: dict[str, AgentOutput]) -> dict[str, Any]:
         bias = self._bias()

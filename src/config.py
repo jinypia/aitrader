@@ -190,6 +190,11 @@ class Settings:
     market_policy_caution_entry_momentum_boost_pct: float
     market_policy_halt_entry_momentum_boost_pct: float
     market_policy_scalping_min_volume_boost: float
+    manager_reason_ema_alpha_min: float
+    manager_reason_ema_alpha_max: float
+    manager_reason_ema_scale_trend: float
+    manager_reason_ema_scale_scalping: float
+    manager_reason_ema_scale_defensive: float
     compare_warn_win_rate_gap_pct: float
     compare_warn_pnl_gap_krw: float
     compare_warn_expectancy_gap_krw: float
@@ -420,6 +425,11 @@ def load_settings() -> Settings:
         market_policy_caution_entry_momentum_boost_pct=float(_get("MARKET_POLICY_CAUTION_ENTRY_MOMENTUM_BOOST_PCT", "0.20")),
         market_policy_halt_entry_momentum_boost_pct=float(_get("MARKET_POLICY_HALT_ENTRY_MOMENTUM_BOOST_PCT", "0.60")),
         market_policy_scalping_min_volume_boost=float(_get("MARKET_POLICY_SCALPING_MIN_VOLUME_BOOST", "0.20")),
+        manager_reason_ema_alpha_min=float(_get("MANAGER_REASON_EMA_ALPHA_MIN", "0.08")),
+        manager_reason_ema_alpha_max=float(_get("MANAGER_REASON_EMA_ALPHA_MAX", "0.40")),
+        manager_reason_ema_scale_trend=float(_get("MANAGER_REASON_EMA_SCALE_TREND", "1.05")),
+        manager_reason_ema_scale_scalping=float(_get("MANAGER_REASON_EMA_SCALE_SCALPING", "1.15")),
+        manager_reason_ema_scale_defensive=float(_get("MANAGER_REASON_EMA_SCALE_DEFENSIVE", "0.85")),
         compare_warn_win_rate_gap_pct=float(_get("COMPARE_WARN_WIN_RATE_GAP_PCT", "20.0")),
         compare_warn_pnl_gap_krw=float(_get("COMPARE_WARN_PNL_GAP_KRW", "100000")),
         compare_warn_expectancy_gap_krw=float(_get("COMPARE_WARN_EXPECTANCY_GAP_KRW", "10000")),
