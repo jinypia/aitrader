@@ -1016,18 +1016,29 @@ class ReportingAgent(BaseAgent):
         prev_avg = _avg_rate(prev)
         delta = recent_avg - prev_avg
 
-        direction = "flat"
-        if delta >= 0.03:
-            direction = "up"
-        elif delta <= -0.03:
-            direction = "down"
+        prev_prev = rows[-21:-14]
+        prev_prev_avg = _avg_rate(prev_prev)
+        prev_delta = prev_avg - prev_prev_avg
+
+        def _direction_from_delta(value: float) -> str:
+            if value >= 0.03:
+                return "up"
+            if value <= -0.03:
+                return "down"
+            return "flat"
+
+        direction = _direction_from_delta(delta)
+        previous_direction = _direction_from_delta(prev_delta)
+        flip_up_to_down = (previous_direction == "up") and (direction == "down")
 
         return {
             "window_days": len(recent),
             "recent_avg_rate_pct": round(recent_avg, 4),
             "previous_avg_rate_pct": round(prev_avg, 4),
             "delta_rate_pct": round(delta, 4),
+            "previous_direction": previous_direction,
             "direction": direction,
+            "flip_up_to_down": flip_up_to_down,
         }
 
     def execute(self, state: BotState, context: dict[str, Any]) -> AgentOutput:
@@ -1180,10 +1191,16 @@ class ManagerSlackNotifier:
         label = str(outlook.get("label") or "INSUFFICIENT_DATA")
         trend_dir = str(trend.get("direction") or "flat")
         trend_delta = _safe_float(trend.get("delta_rate_pct"), 0.0)
+        flip_up_to_down = bool(trend.get("flip_up_to_down"))
+
+        quality_floor = 45.0
+        alert = ""
+        if flip_up_to_down and quality < quality_floor:
+            alert = "[ALERT] trend flipped up->down under weak quality; tighten risk. "
 
         kind = str(payload.get("report_kind") or "hourly").upper()
         text = (
-            f"[Manager {kind}] symbol={symbol} regime={regime} return={ret:.2f}% "
+            f"{alert}[Manager {kind}] symbol={symbol} regime={regime} return={ret:.2f}% "
             f"outlook={label} exp_day={exp_rate:+.2f}% quality={quality:.1f} trend7={trend_dir}({trend_delta:+.2f}%)\n{report_output.summary}"
         )
         try:
