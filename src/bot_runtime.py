@@ -25,7 +25,7 @@ from zoneinfo import ZoneInfo
 from config import load_settings, selection_universe_symbols
 from kiwoom_api import KiwoomAPI
 from strategy import bearish_long_exception_ready, decide_action, trend_runtime_diagnostics, trend_runtime_signal
-from scalping_strategy import calculate_scalp_metrics, scalp_entry_signal, scalp_exit_signal
+from scalping_strategy import ScalpParams, calculate_scalp_metrics, scalp_entry_signal, scalp_exit_signal
 
 
 def _is_scalping_mode(settings: Any) -> bool:
@@ -33,20 +33,20 @@ def _is_scalping_mode(settings: Any) -> bool:
     return str(getattr(settings, "strategy_mode", "AUTO")).upper() == "SCALPING"
 
 
-def _get_scalping_params(settings: Any) -> dict:
+def _get_scalping_params(settings: Any) -> ScalpParams:
     """Get scalping parameters from settings"""
-    return {
-        "rsi_entry_min": getattr(settings, "scalping_rsi_entry_min", 30.0),
-        "rsi_entry_max": getattr(settings, "scalping_rsi_entry_max", 70.0),
-        "rsi_exit_min": getattr(settings, "scalping_rsi_exit_min", 25.0),
-        "rsi_exit_max": getattr(settings, "scalping_rsi_exit_max", 75.0),
-        "volume_spike_ratio": getattr(settings, "scalping_volume_spike_ratio", 2.0),
-        "profit_target_pct": getattr(settings, "scalping_profit_target_pct", 0.8),
-        "stop_loss_pct": getattr(settings, "scalping_stop_loss_pct", -0.5),
-        "max_hold_bars": getattr(settings, "scalping_max_hold_bars", 6),
-        "min_trend_strength": getattr(settings, "scalping_min_trend_strength", 0.1),
-        "min_volume_ratio": getattr(settings, "scalping_min_volume_ratio", 1.5),
-    }
+    return ScalpParams(
+        rsi_entry_min=float(getattr(settings, "scalping_rsi_entry_min", 30.0)),
+        rsi_entry_max=float(getattr(settings, "scalping_rsi_entry_max", 70.0)),
+        rsi_exit_oversold=float(getattr(settings, "scalping_rsi_exit_min", 25.0)),
+        rsi_exit_overbought=float(getattr(settings, "scalping_rsi_exit_max", 75.0)),
+        volume_spike_threshold=float(getattr(settings, "scalping_volume_spike_ratio", 2.0)),
+        profit_target_pct=float(getattr(settings, "scalping_profit_target_pct", 0.8)),
+        stop_loss_pct=abs(float(getattr(settings, "scalping_stop_loss_pct", -0.5))),
+        max_hold_bars=int(getattr(settings, "scalping_max_hold_bars", 6)),
+        trend_strength_threshold=float(getattr(settings, "scalping_min_trend_strength", 0.1)),
+        min_volume_ratio=float(getattr(settings, "scalping_min_volume_ratio", 1.5)),
+    )
 
 
 def _get_symbol_intraday_bars(
@@ -135,12 +135,26 @@ def _scalping_decision(
     *,
     api: KiwoomAPI | None = None,
     prefer_live: bool = True,
+    trade_policy: str = "NORMAL",
+    risk_score: float = 0.0,
 ) -> tuple[str, bool, str]:
     """Make scalping decision for symbol"""
     if not _is_scalping_mode(settings):
         return "HOLD", False, "SCALPING_DISABLED"
     
     params = _get_scalping_params(settings)
+    policy = str(trade_policy or "NORMAL").strip().upper()
+    risk = max(0.0, min(100.0, float(risk_score)))
+    if policy == "CAUTION":
+        vol_boost = float(getattr(settings, "market_policy_scalping_min_volume_boost", 0.20))
+        params.min_volume_ratio += vol_boost
+        params.momentum_threshold *= 1.20
+    elif policy == "HALT":
+        # In HALT mode, scalping follows the same fail-closed stance as discretionary entries.
+        return "HOLD", False, "POLICY_HALT"
+    elif risk >= 60.0:
+        params.min_volume_ratio += max(0.10, float(getattr(settings, "market_policy_scalping_min_volume_boost", 0.20)) * 0.5)
+        params.momentum_threshold *= 1.10
     bars, data_source = _get_symbol_intraday_bars(
         symbol,
         api=api,
@@ -1962,6 +1976,53 @@ def _market_now(settings) -> datetime:
     return datetime.now(tz)
 
 
+def _manual_event_profile(manual_alert: str) -> str:
+    text = str(manual_alert or "").strip().lower()
+    if not text:
+        return "NONE"
+    if any(tag in text for tag in ["credit", "liquidity", "funding", "repo", "cp"]):
+        return "LIQUIDITY_STRESS"
+    if any(tag in text for tag in ["energy", "oil", "lng", "hormuz", "원유", "유가"]):
+        return "ENERGY_SHOCK"
+    if any(tag in text for tag in ["tariff", "sanction", "policy", "관세", "제재", "정책"]):
+        return "POLICY_SHOCK"
+    return "GENERAL_ALERT"
+
+
+def _market_risk_score(
+    *,
+    regime_index_pct: float,
+    market_volatility_pct: float,
+    shock_active: bool,
+    event_profile: str,
+    settings,
+) -> float:
+    idx_drop_limit = max(0.2, abs(float(getattr(settings, "market_shock_drop_pct", -2.0))))
+    vol_spike_limit = max(0.5, float(getattr(settings, "vkospi_spike_proxy_pct", 3.8)))
+    idx_stress = max(0.0, min(1.0, (-float(regime_index_pct)) / idx_drop_limit))
+    vol_stress = max(0.0, min(1.0, float(market_volatility_pct) / vol_spike_limit))
+    profile_boost_map = {
+        "NONE": 0.0,
+        "GENERAL_ALERT": 6.0,
+        "POLICY_SHOCK": 10.0,
+        "ENERGY_SHOCK": 12.0,
+        "LIQUIDITY_STRESS": 16.0,
+    }
+    shock_boost = 18.0 if shock_active else 0.0
+    score = (idx_stress * 40.0) + (vol_stress * 36.0) + shock_boost + profile_boost_map.get(str(event_profile), 0.0)
+    return max(0.0, min(100.0, score))
+
+
+def _policy_from_risk(risk_score: float, settings) -> str:
+    caution = float(getattr(settings, "market_policy_caution_risk_score", 45.0))
+    halt = float(getattr(settings, "market_policy_halt_risk_score", 72.0))
+    if risk_score >= halt:
+        return "HALT"
+    if risk_score >= caution:
+        return "CAUTION"
+    return "NORMAL"
+
+
 def _krx_session_context(
     settings,
     *,
@@ -2030,11 +2091,20 @@ def _krx_session_context(
         sell_mult = 1.00
 
     manual_alert = str(getattr(settings, "manual_market_alert", "") or "").strip().lower()
+    event_profile = _manual_event_profile(manual_alert)
     alert_tags = ["sidecar", "circuit", "vi", "서킷", "변동성 완화장치"]
     manual_halt = any(tag in manual_alert for tag in alert_tags)
     shock_by_index = float(regime_index_pct) <= float(settings.market_shock_drop_pct)
     shock_by_vol = float(market_volatility_pct) >= float(settings.vkospi_spike_proxy_pct)
     shock_active = manual_halt or shock_by_index or shock_by_vol
+    risk_score = _market_risk_score(
+        regime_index_pct=regime_index_pct,
+        market_volatility_pct=market_volatility_pct,
+        shock_active=shock_active,
+        event_profile=event_profile,
+        settings=settings,
+    )
+    trade_policy = _policy_from_risk(risk_score, settings)
 
     shock_reasons: list[str] = []
     if manual_halt:
@@ -2052,10 +2122,20 @@ def _krx_session_context(
         profile = "CAPITAL_PRESERVATION"
         buy_mult = max(1.35, float(buy_mult))
         sell_mult = min(0.85, float(sell_mult))
+    if trade_policy == "CAUTION":
+        profile = "CAUTION_RISK_CONTROL"
+        buy_mult = max(1.20, float(buy_mult))
+        sell_mult = min(0.95, float(sell_mult))
+    elif trade_policy == "HALT":
+        allow_buy = False
+        profile = "HALT_NEW_BUYS"
+        buy_mult = max(1.45, float(buy_mult))
+        sell_mult = min(0.85, float(sell_mult))
 
     diag = (
         f"phase={phase} profile={profile} allow={int(allow_buy)}/{int(allow_sell)} "
-        f"shock={int(shock_active)} idx={float(regime_index_pct):+.2f}% mvol={float(market_volatility_pct):.2f}%"
+        f"policy={trade_policy} risk={risk_score:.1f} shock={int(shock_active)} "
+        f"idx={float(regime_index_pct):+.2f}% mvol={float(market_volatility_pct):.2f}%"
     )
     return {
         "phase": phase,
@@ -2064,6 +2144,9 @@ def _krx_session_context(
         "allow_sell": allow_sell,
         "buy_mult": float(buy_mult),
         "sell_mult": float(sell_mult),
+        "trade_policy": trade_policy,
+        "risk_score": float(risk_score),
+        "event_profile": event_profile,
         "shock_active": shock_active,
         "shock_reason": ", ".join(shock_reasons),
         "diag": diag,
@@ -2951,6 +3034,8 @@ def _entry_plan_for_symbol(
     base_confirm_cycles: int,
     strategy_edge_map: dict[str, float] | None = None,
     market_bias_mode: str = "BALANCED",
+    trade_policy: str = "NORMAL",
+    risk_score: float = 0.0,
     settings: Any = None,
 ) -> dict[str, object]:
     setup_state = _classify_setup_state(factors)
@@ -2984,13 +3069,26 @@ def _entry_plan_for_symbol(
         confirm_extra += 1
 
     bias_mode = str(market_bias_mode or "BALANCED").strip().upper()
+    policy = str(trade_policy or "NORMAL").strip().upper()
+    policy_confirm_extra = 0
+    if policy == "CAUTION":
+        policy_confirm_extra = int(getattr(settings, "market_policy_caution_confirm_extra", 1))
+        enable_trend_entry = False
+    elif policy == "HALT":
+        policy_confirm_extra = int(getattr(settings, "market_policy_halt_confirm_extra", 2))
+        enable_trend_entry = False
+    if float(risk_score) >= 60.0:
+        policy_confirm_extra += 1
     if bias_mode == "AGGRESSIVE":
         if regime != "BEARISH" and setup_state in {"RISK_ON", "NEUTRAL"}:
             enable_trend_entry = True
     elif bias_mode == "DEFENSIVE":
         confirm_extra += 1
 
-    confirm_needed = max(1, int(base_confirm_cycles) + confirm_extra)
+    if policy == "HALT":
+        confirm_extra += 2
+
+    confirm_needed = max(1, int(base_confirm_cycles) + confirm_extra + policy_confirm_extra)
     return {
         "entry_mode": profile,
         "setup_state": setup_state,
@@ -2999,6 +3097,7 @@ def _entry_plan_for_symbol(
         "edge": edge,
         "edge_key": edge_key,
         "market_bias_mode": bias_mode,
+        "trade_policy": policy,
     }
 
 
@@ -3566,6 +3665,8 @@ def run_bot(stop_event: threading.Event, state: BotState) -> None:
                                 base_confirm_cycles=settings.signal_confirm_cycles,
                                 strategy_edge_map=strategy_edge_map,
                                 market_bias_mode=market_bias_mode,
+                                trade_policy="NORMAL",
+                                risk_score=0.0,
                                 settings=settings,
                             )
                             for sym in analysis_state_symbols
@@ -3932,6 +4033,9 @@ def run_bot(stop_event: threading.Event, state: BotState) -> None:
             if not market_status_enabled:
                 session_ctx["shock_active"] = False
                 session_ctx["shock_reason"] = ""
+                session_ctx["trade_policy"] = "NORMAL"
+                session_ctx["risk_score"] = 0.0
+                session_ctx["event_profile"] = "NONE"
                 session_ctx["diag"] = str(session_ctx.get("diag", "")).replace(" shock=1", " shock=0")
             if bool(session_ctx.get("shock_active", False)):
                 market_bias_mode = "DEFENSIVE"
@@ -3962,6 +4066,7 @@ def run_bot(stop_event: threading.Event, state: BotState) -> None:
                 _event(state, f"MARKET_BIAS mode={market_bias_mode} reason={market_bias_reason}")
             session_sig = (
                 f"{session_ctx.get('phase')}|{session_ctx.get('profile')}|"
+                f"{session_ctx.get('trade_policy')}|{float(session_ctx.get('risk_score', 0.0)):.1f}|"
                 f"{int(bool(session_ctx.get('allow_buy')))}|{int(bool(session_ctx.get('allow_sell')))}|"
                 f"{int(bool(session_ctx.get('shock_active')))}"
             )
@@ -3996,6 +4101,8 @@ def run_bot(stop_event: threading.Event, state: BotState) -> None:
                     base_confirm_cycles=settings.signal_confirm_cycles,
                     strategy_edge_map=strategy_edge_map,
                     market_bias_mode=market_bias_mode,
+                    trade_policy=str(session_ctx.get("trade_policy", "NORMAL")),
+                    risk_score=float(session_ctx.get("risk_score", 0.0)),
                     settings=settings,
                 )
                 symbol_strategy_map[sym] = strategy_plan
@@ -4009,6 +4116,17 @@ def run_bot(stop_event: threading.Event, state: BotState) -> None:
                 effective_min_entry_momentum = float(
                     min_entry_momentum_map.get(sym, auto_params["min_entry_momentum_pct"])
                 )
+                policy = str(session_ctx.get("trade_policy", "NORMAL") or "NORMAL").strip().upper()
+                if policy == "CAUTION":
+                    effective_min_entry_score += float(getattr(settings, "market_policy_caution_entry_score_boost", 0.08))
+                    effective_min_entry_momentum += float(
+                        getattr(settings, "market_policy_caution_entry_momentum_boost_pct", 0.20)
+                    )
+                elif policy == "HALT":
+                    effective_min_entry_score += float(getattr(settings, "market_policy_halt_entry_score_boost", 0.20))
+                    effective_min_entry_momentum += float(
+                        getattr(settings, "market_policy_halt_entry_momentum_boost_pct", 0.60)
+                    )
                 effective_tp_partial_ratio = float(
                     take_profit_partial_ratio_map.get(sym, auto_params["take_profit_partial_ratio"])
                 )
@@ -4076,6 +4194,8 @@ def run_bot(stop_event: threading.Event, state: BotState) -> None:
                     settings=settings,
                     api=api,
                     prefer_live=live_scalping_phase,
+                    trade_policy=str(session_ctx.get("trade_policy", "NORMAL")),
+                    risk_score=float(session_ctx.get("risk_score", 0.0)),
                 )
                 if _is_scalping_mode(settings):
                     _event(
@@ -4372,6 +4492,9 @@ def run_bot(stop_event: threading.Event, state: BotState) -> None:
                 if action == "BUY" and not bool(session_ctx.get("allow_buy", False)) and not shock_exception_ok:
                     action = "HOLD"
                     reason_parts.append(f"blocked:session({session_ctx.get('phase')})")
+                if action == "BUY" and str(session_ctx.get("trade_policy", "NORMAL")).upper() == "HALT":
+                    action = "HOLD"
+                    reason_parts.append("blocked:policy_halt")
                 if action == "SELL" and not bool(session_ctx.get("allow_sell", False)):
                     action = "HOLD"
                     reason_parts.append(f"blocked:session_sell({session_ctx.get('phase')})")
@@ -4449,6 +4572,17 @@ def run_bot(stop_event: threading.Event, state: BotState) -> None:
                     if market_status_enabled and regime == "BEARISH" and bearish_long_ok:
                         order_qty = max(1, int(order_qty * 0.5))
                         reason_parts.append("bearish_half_size")
+                    policy = str(session_ctx.get("trade_policy", "NORMAL") or "NORMAL").strip().upper()
+                    risk_score = max(0.0, min(100.0, float(session_ctx.get("risk_score", 0.0))))
+                    if policy == "CAUTION":
+                        order_qty = max(1, int(round(order_qty * 0.70)))
+                        reason_parts.append("policy_size:0.70")
+                    elif policy == "HALT":
+                        order_qty = max(1, int(round(order_qty * 0.40)))
+                        reason_parts.append("policy_size:0.40")
+                    elif risk_score >= 60.0:
+                        order_qty = max(1, int(round(order_qty * 0.85)))
+                        reason_parts.append("risk_size:0.85")
                     reason_parts.append(f"vol={symbol_vol*100:.2f}%")
                 if action == "SELL" and qty > 0:
                     if force_sell_all:

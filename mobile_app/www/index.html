@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0b1524" />
+    <title>AITRADER iPhone</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="hero">
+        <div class="eyebrow">AITRADER</div>
+        <h1>Native iPhone Shell</h1>
+        <p class="sub">
+          Connect your iPhone app to the running AITRADER web server. Because the trading engine is Python-based,
+          this iPhone app works as a native wrapper around your live dashboard.
+        </p>
+      </header>
+
+      <main class="layout">
+        <section class="card config-card">
+          <div class="section-title">Server Connection</div>
+          <label class="field">
+            <span>AITRADER Server URL</span>
+            <input id="serverUrl" type="url" placeholder="http://192.168.0.10:8080" />
+          </label>
+          <div class="button-row">
+            <button id="connectBtn" class="primary">Open Dashboard</button>
+            <button id="saveBtn" class="secondary">Save URL</button>
+            <button id="resetBtn" class="ghost">Reset</button>
+          </div>
+          <div class="hint">
+            Use your Mac's LAN IP, for example <code>http://192.168.x.x:8080</code>. The iPhone and Mac should be on
+            the same network unless you expose the server through HTTPS.
+          </div>
+          <div class="summary-grid">
+            <div class="summary-item">
+              <div class="summary-label">Mode</div>
+              <div class="summary-value">Native shell + remote Python server</div>
+            </div>
+            <div class="summary-item">
+              <div class="summary-label">Deep Link</div>
+              <div class="summary-value">aitrader://connect?server=...</div>
+            </div>
+            <div class="summary-item">
+              <div class="summary-label">Best For</div>
+              <div class="summary-value">Internal install, TestFlight prep, operator dashboard</div>
+            </div>
+          </div>
+          <div id="status" class="status">Set the server URL and open the dashboard.</div>
+        </section>
+
+        <section class="card preview-card">
+          <div class="section-title">Live Preview</div>
+          <div class="iframe-wrap">
+            <iframe id="dashboardFrame" title="AITRADER Dashboard" referrerpolicy="no-referrer"></iframe>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

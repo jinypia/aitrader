@@ -1,0 +1,30 @@
+{
+  "name": "aitrader-ios-shell",
+  "version": "1.0.0",
+  "description": "Native iPhone shell for the AITRADER web dashboard",
+  "main": "index.js",
+  "scripts": {
+    "build": "node scripts/build-web.mjs",
+    "ios:doctor": "bash scripts/ios-doctor.sh",
+    "cap:sync": "npm run build && npx cap sync ios",
+    "cap:open:ios": "npx cap open ios",
+    "ios:add": "npx cap add ios"
+  },
+  "keywords": [
+    "capacitor",
+    "ios",
+    "aitrader"
+  ],
+  "author": "Codex",
+  "license": "MIT",
+  "type": "commonjs",
+  "dependencies": {
+    "@capacitor/app": "^8.1.0",
+    "@capacitor/cli": "^8.3.0",
+    "@capacitor/core": "^8.3.0",
+    "@capacitor/ios": "^8.3.0"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.2"
+  }
+}

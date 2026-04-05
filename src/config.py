@@ -181,6 +181,15 @@ class Settings:
     vkospi_spike_proxy_pct: float
     manual_market_alert: str
     market_status_filter_enabled: bool
+    market_policy_caution_risk_score: float
+    market_policy_halt_risk_score: float
+    market_policy_caution_confirm_extra: int
+    market_policy_halt_confirm_extra: int
+    market_policy_caution_entry_score_boost: float
+    market_policy_halt_entry_score_boost: float
+    market_policy_caution_entry_momentum_boost_pct: float
+    market_policy_halt_entry_momentum_boost_pct: float
+    market_policy_scalping_min_volume_boost: float
     compare_warn_win_rate_gap_pct: float
     compare_warn_pnl_gap_krw: float
     compare_warn_expectancy_gap_krw: float
@@ -402,6 +411,15 @@ def load_settings() -> Settings:
         vkospi_spike_proxy_pct=float(_get("VKOSPI_SPIKE_PROXY_PCT", "3.8")),
         manual_market_alert=_get("MANUAL_MARKET_ALERT", "").strip(),
         market_status_filter_enabled=_to_bool(_get("MARKET_STATUS_FILTER_ENABLED", "false"), False),
+        market_policy_caution_risk_score=float(_get("MARKET_POLICY_CAUTION_RISK_SCORE", "45.0")),
+        market_policy_halt_risk_score=float(_get("MARKET_POLICY_HALT_RISK_SCORE", "72.0")),
+        market_policy_caution_confirm_extra=max(0, int(_get("MARKET_POLICY_CAUTION_CONFIRM_EXTRA", "1"))),
+        market_policy_halt_confirm_extra=max(0, int(_get("MARKET_POLICY_HALT_CONFIRM_EXTRA", "2"))),
+        market_policy_caution_entry_score_boost=float(_get("MARKET_POLICY_CAUTION_ENTRY_SCORE_BOOST", "0.08")),
+        market_policy_halt_entry_score_boost=float(_get("MARKET_POLICY_HALT_ENTRY_SCORE_BOOST", "0.20")),
+        market_policy_caution_entry_momentum_boost_pct=float(_get("MARKET_POLICY_CAUTION_ENTRY_MOMENTUM_BOOST_PCT", "0.20")),
+        market_policy_halt_entry_momentum_boost_pct=float(_get("MARKET_POLICY_HALT_ENTRY_MOMENTUM_BOOST_PCT", "0.60")),
+        market_policy_scalping_min_volume_boost=float(_get("MARKET_POLICY_SCALPING_MIN_VOLUME_BOOST", "0.20")),
         compare_warn_win_rate_gap_pct=float(_get("COMPARE_WARN_WIN_RATE_GAP_PCT", "20.0")),
         compare_warn_pnl_gap_krw=float(_get("COMPARE_WARN_PNL_GAP_KRW", "100000")),
         compare_warn_expectancy_gap_krw=float(_get("COMPARE_WARN_EXPECTANCY_GAP_KRW", "10000")),

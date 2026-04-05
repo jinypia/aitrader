@@ -1,0 +1,21 @@
+<svg width="2732" height="2732" viewBox="0 0 2732 2732" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#08111E"/>
+      <stop offset="100%" stop-color="#12324F"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0%" stop-color="#16C774"/>
+      <stop offset="100%" stop-color="#F0B90B"/>
+    </linearGradient>
+  </defs>
+  <rect width="2732" height="2732" fill="url(#bg)"/>
+  <rect x="701" y="586" width="1330" height="1330" rx="300" fill="#0D1E31" stroke="#1F4F76" stroke-width="18"/>
+  <rect x="950" y="1290" width="150" height="210" rx="28" fill="#91ECB8"/>
+  <rect x="1180" y="1120" width="150" height="380" rx="28" fill="#4CDB89"/>
+  <rect x="1410" y="930" width="150" height="570" rx="28" fill="#18C874"/>
+  <path d="M948 950 C1090 875, 1198 970, 1302 930 C1410 885, 1506 760, 1630 796 C1730 826, 1812 770, 1890 686" fill="none" stroke="url(#accent)" stroke-width="56" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="1890" cy="686" r="44" fill="#F0B90B"/>
+  <text x="1366" y="1738" font-size="208" font-family="Helvetica, Arial, sans-serif" text-anchor="middle" fill="#F5F7FA" font-weight="700">AITRADER</text>
+  <text x="1366" y="1908" font-size="72" font-family="Helvetica, Arial, sans-serif" text-anchor="middle" fill="#9EB7CC" font-weight="500">Korean Equity Trading Dashboard</text>
+</svg>

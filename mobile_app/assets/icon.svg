@@ -1,0 +1,19 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0B1524"/>
+      <stop offset="100%" stop-color="#143A5C"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0%" stop-color="#11C26D"/>
+      <stop offset="100%" stop-color="#F0B90B"/>
+    </linearGradient>
+  </defs>
+  <rect x="32" y="32" width="960" height="960" rx="220" fill="url(#bg)"/>
+  <rect x="180" y="640" width="110" height="120" rx="22" fill="#8FE8B6" opacity="0.9"/>
+  <rect x="360" y="520" width="110" height="240" rx="22" fill="#52D88C" opacity="0.95"/>
+  <rect x="540" y="410" width="110" height="350" rx="22" fill="#1FCC78"/>
+  <path d="M180 350 C280 300, 360 360, 430 330 C500 300, 560 220, 650 245 C720 265, 778 225, 844 160" fill="none" stroke="url(#accent)" stroke-width="42" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="844" cy="160" r="34" fill="#F0B90B"/>
+  <text x="512" y="885" font-size="94" font-family="Helvetica, Arial, sans-serif" text-anchor="middle" fill="#F4F7FB" font-weight="700">AITRADER</text>
+</svg>

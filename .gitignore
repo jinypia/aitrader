@@ -4,3 +4,14 @@ logs/
 .venv/
 personal/
 README.md
+
+# Mobile app dependency/cache artifacts
+mobile_app/node_modules/
+mobile_app/.npm-cache/
+mobile_app/.npm/
+mobile_app/www/
+
+# General JavaScript/TypeScript caches
+**/.npm-cache/
+**/.npm/
+**/node_modules/
