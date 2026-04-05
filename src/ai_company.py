@@ -272,6 +272,17 @@ class ManagerLearningStore:
         margin = z * math.sqrt((p * (1.0 - p) + z2 / (4.0 * trials)) / trials)
         return max(0.0, min(1.0, (center - margin) / denom))
 
+    @staticmethod
+    def _dynamic_ema_alpha(delta_avg: float, hist_sells: int, prev_ema: float) -> float:
+        # More history -> slower updates. Higher volatility -> slower updates.
+        # Sign flip vs previous EMA -> slightly faster adaptation.
+        sample_conf = _clamp(float(hist_sells) / 20.0, 0.0, 1.0)
+        vol_norm = _clamp(abs(delta_avg) / 20000.0, 0.0, 1.0)
+        alpha = 0.35 - (0.20 * sample_conf) - (0.10 * vol_norm)
+        if prev_ema * delta_avg < 0:
+            alpha += 0.05
+        return round(_clamp(alpha, 0.08, 0.40), 4)
+
     def update_from_cycle(self, state: BotState, by_name: dict[str, AgentOutput]) -> dict[str, Any]:
         bias = self._bias()
         current_return = _safe_float(state.total_return_pct, 0.0)
@@ -354,8 +365,8 @@ class ManagerLearningStore:
         reason_delta = dict(sleeve_attr.get("reason_delta") or {})
         reason_totals = dict(sleeve_attr.get("reason_totals") or {})
         reason_ema = dict(self._cache.get("reason_code_ema") or {})
+        reason_ema_alpha: dict[str, float] = {}
         reason_signal_summary: dict[str, float] = {"trend": 0.0, "scalping": 0.0, "defensive": 0.0}
-        ema_alpha = 0.25
 
         # Update EMA with recent reason performance (delta window).
         for code, row in reason_delta.items():
@@ -365,8 +376,12 @@ class ManagerLearningStore:
             if sells <= 0:
                 continue
             delta_avg = _safe_float(row.get("realized"), 0.0) / max(1, sells)
+            hist_row = dict(reason_totals.get(code) or {})
+            hist_sells = int(_safe_float(hist_row.get("sells"), 0.0))
             prev_ema = _safe_float(reason_ema.get(code), delta_avg)
-            reason_ema[code] = round((ema_alpha * delta_avg) + ((1.0 - ema_alpha) * prev_ema), 6)
+            alpha = self._dynamic_ema_alpha(delta_avg, hist_sells, prev_ema)
+            reason_ema_alpha[str(code)] = alpha
+            reason_ema[code] = round((alpha * delta_avg) + ((1.0 - alpha) * prev_ema), 6)
 
         for code, row in reason_delta.items():
             if not isinstance(row, dict):
@@ -463,6 +478,7 @@ class ManagerLearningStore:
                 "win_rate_lb_pct": win_rate_lb,
                 "confidence": confidence,
                 "ema_expectancy": ema_expectancy,
+                "ema_alpha": _safe_float(reason_ema_alpha.get(str(reason)), 0.0),
                 "blended_expectancy": blended_expectancy,
                 "expectancy_score": expectancy_score,
             }

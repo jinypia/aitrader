@@ -330,6 +330,7 @@ Manager command model:
 - Reason-code expectancy now directly nudges sleeve bias updates (`reason_signal_summary`) in addition to manager urgency.
 - Reason-code expectancy weighting is confidence-aware (`confidence`) and uses Wilson lower bound (`win_rate_lb_pct`) for stability.
 - Reason-code expectancy also includes recency-weighted EMA (`ema_expectancy`) and blended score (`blended_expectancy`).
+- EMA speed is dynamic per reason code (`ema_alpha`), adapting to sample size and recent volatility.
 
 Tune event cadence:
 
