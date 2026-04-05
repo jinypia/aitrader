@@ -61,6 +61,7 @@ class ManagerLearningStore:
                 "defensive": 1.0,
             },
             "last_total_return_pct": 0.0,
+            "last_realized_pnl": 0.0,
             "updated_at": datetime.now().isoformat(timespec="seconds"),
         }
 
@@ -98,6 +99,9 @@ class ManagerLearningStore:
         current_return = _safe_float(state.total_return_pct, 0.0)
         last_return = _safe_float(self._cache.get("last_total_return_pct"), 0.0)
         pnl_delta = current_return - last_return
+        current_realized = _safe_float(state.realized_pnl, 0.0)
+        last_realized = _safe_float(self._cache.get("last_realized_pnl"), 0.0)
+        realized_delta = current_realized - last_realized
 
         risk_payload = (by_name.get("risk_guard").payload if by_name.get("risk_guard") else {})
         trend_payload = (by_name.get("invest_trend").payload if by_name.get("invest_trend") else {})
@@ -109,9 +113,20 @@ class ManagerLearningStore:
         scalp_signal = str(scalp_payload.get("signal") or "STANDBY")
         def_posture = str(def_payload.get("posture") or "BUFFER")
 
-        reasons: list[str] = []
+        journal_rows = list(state.order_journal or [])
+        filled_rows = [
+            row
+            for row in journal_rows
+            if str(row.get("status") or "") in {"FILLED_SIM", "FILLED_LOCAL"}
+        ]
+        recent_filled = filled_rows[-12:]
+        buy_fills = sum(1 for row in recent_filled if str(row.get("side") or "") == "BUY")
+        sell_fills = sum(1 for row in recent_filled if str(row.get("side") or "") == "SELL")
 
-        if pnl_delta >= 0.03:
+        reasons: list[str] = []
+        effective_delta = realized_delta if abs(realized_delta) > 0.0 else pnl_delta
+
+        if effective_delta >= 0.03:
             if trend_signal == "ACCUMULATE":
                 bias["trend"] += 0.03
                 reasons.append("reward_trend")
@@ -121,7 +136,7 @@ class ManagerLearningStore:
             if not reasons:
                 bias["defensive"] += 0.02
                 reasons.append("reward_defensive")
-        elif pnl_delta <= -0.03:
+        elif effective_delta <= -0.03:
             if trend_signal == "ACCUMULATE":
                 bias["trend"] -= 0.04
                 reasons.append("penalize_trend")
@@ -130,6 +145,20 @@ class ManagerLearningStore:
                 reasons.append("penalize_scalping")
             bias["defensive"] += 0.03
             reasons.append("boost_defensive")
+
+        if sell_fills >= 2 and realized_delta > 0:
+            bias["trend"] += 0.02
+            bias["scalping"] += 0.01
+            reasons.append("realized_win_batch")
+        elif sell_fills >= 2 and realized_delta < 0:
+            bias["trend"] -= 0.02
+            bias["scalping"] -= 0.02
+            bias["defensive"] += 0.02
+            reasons.append("realized_loss_batch")
+
+        if buy_fills > sell_fills + 2 and effective_delta < 0:
+            bias["defensive"] += 0.02
+            reasons.append("overtrading_guard")
 
         if risk_level in {"HIGH", "CRITICAL"}:
             bias["trend"] -= 0.02
@@ -146,11 +175,15 @@ class ManagerLearningStore:
 
         self._cache["sleeve_bias"] = bias
         self._cache["last_total_return_pct"] = current_return
+        self._cache["last_realized_pnl"] = current_realized
         self._save()
 
         return {
             "sleeve_bias": bias,
             "pnl_delta_pct": round(pnl_delta, 4),
+            "realized_delta": round(realized_delta, 4),
+            "buy_fills": int(buy_fills),
+            "sell_fills": int(sell_fills),
             "reasons": reasons,
             "risk_level": risk_level,
         }
@@ -818,8 +851,11 @@ class ManagerAgent:
             learn_result = self.learning_store.update_from_cycle(state, by_name)
             if learn_result.get("reasons"):
                 logging.info(
-                    "MANAGER_LEARN delta=%.4f reasons=%s bias=%s",
+                    "MANAGER_LEARN delta=%.4f realized_delta=%.2f fills(b=%s,s=%s) reasons=%s bias=%s",
                     _safe_float(learn_result.get("pnl_delta_pct"), 0.0),
+                    _safe_float(learn_result.get("realized_delta"), 0.0),
+                    int(learn_result.get("buy_fills") or 0),
+                    int(learn_result.get("sell_fills") or 0),
                     ",".join(list(learn_result.get("reasons") or [])),
                     learn_result.get("sleeve_bias"),
                 )

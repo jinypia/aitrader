@@ -316,6 +316,7 @@ Manager command model:
 - Agents acknowledge manager directives in their payload (`manager_order`) and execute with role-specific logic.
 - When important signals change, manager raises urgency and updates directives before the next decision/report.
 - Learning state is persisted in `data/manager_learning_state.json` and used to tune allocation bias.
+- Learning updates are driven by realized-trade outcomes (`state.realized_pnl` delta) with fill activity attribution.
 
 Tune event cadence:
 
