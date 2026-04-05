@@ -19,6 +19,10 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _clamp(value: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, value))
+
+
 @dataclass
 class AgentOutput:
     agent: str
@@ -116,6 +120,130 @@ class RiskGuardAgent(BaseAgent):
         )
 
 
+class CapitalAllocationAgent(BaseAgent):
+    name = "capital_allocation"
+
+    def execute(self, state: BotState, context: dict[str, Any]) -> AgentOutput:
+        by_name: dict[str, AgentOutput] = dict(context.get("by_name") or {})
+        risk_payload = (by_name.get("risk_guard").payload if by_name.get("risk_guard") else {})
+        market_payload = (by_name.get("market_analysis").payload if by_name.get("market_analysis") else {})
+        invest_payload = (by_name.get("investment_strategy").payload if by_name.get("investment_strategy") else {})
+
+        risk_level = str(risk_payload.get("risk_level", "LOW"))
+        regime = str(market_payload.get("regime", "UNKNOWN"))
+        confidence = _safe_float(market_payload.get("confidence", 0.0), 0.0)
+        action_hint = str(invest_payload.get("action_hint", "HOLD"))
+
+        weights = {
+            "trend": 0.45,
+            "scalping": 0.30,
+            "defensive": 0.25,
+        }
+
+        if risk_level == "CRITICAL":
+            weights = {"trend": 0.10, "scalping": 0.05, "defensive": 0.85}
+        elif risk_level == "HIGH":
+            weights = {"trend": 0.20, "scalping": 0.15, "defensive": 0.65}
+        elif risk_level == "MEDIUM":
+            weights = {"trend": 0.30, "scalping": 0.25, "defensive": 0.45}
+        elif regime == "BULLISH" and confidence >= 0.6:
+            weights = {"trend": 0.55, "scalping": 0.30, "defensive": 0.15}
+        elif regime == "BEARISH":
+            weights = {"trend": 0.15, "scalping": 0.10, "defensive": 0.75}
+
+        if action_hint == "READY_TO_BUY":
+            weights["trend"] = _clamp(weights["trend"] + 0.05, 0.0, 0.8)
+            weights["defensive"] = _clamp(weights["defensive"] - 0.05, 0.0, 0.9)
+
+        total = sum(weights.values()) or 1.0
+        for key in list(weights.keys()):
+            weights[key] = round(weights[key] / total, 4)
+
+        summary = "alloc trend={trend:.0%} scalp={scalping:.0%} def={defensive:.0%}".format(**weights)
+        return AgentOutput(
+            agent=self.name,
+            summary=summary,
+            payload={
+                "weights": weights,
+                "risk_level": risk_level,
+                "regime": regime,
+                "confidence": confidence,
+                "action_hint": action_hint,
+            },
+        )
+
+
+class TrendInvestAgent(BaseAgent):
+    name = "invest_trend"
+
+    def execute(self, state: BotState, context: dict[str, Any]) -> AgentOutput:
+        by_name: dict[str, AgentOutput] = dict(context.get("by_name") or {})
+        alloc = (by_name.get("capital_allocation").payload if by_name.get("capital_allocation") else {})
+        weights = dict(alloc.get("weights") or {})
+        budget = _safe_float(weights.get("trend", 0.0), 0.0)
+        score = _safe_float(state.selection_score, 0.0)
+        signal = "ACCUMULATE" if (score >= 0.70 and budget >= 0.25) else "WAIT"
+        summary = f"signal={signal} budget={budget:.0%} score={score:.2f}"
+        return AgentOutput(
+            agent=self.name,
+            summary=summary,
+            payload={
+                "signal": signal,
+                "budget_weight": budget,
+                "selection_score": score,
+                "symbol": str(state.selected_symbol or ""),
+            },
+        )
+
+
+class ScalpingInvestAgent(BaseAgent):
+    name = "invest_scalping"
+
+    def execute(self, state: BotState, context: dict[str, Any]) -> AgentOutput:
+        by_name: dict[str, AgentOutput] = dict(context.get("by_name") or {})
+        alloc = (by_name.get("capital_allocation").payload if by_name.get("capital_allocation") else {})
+        risk = (by_name.get("risk_guard").payload if by_name.get("risk_guard") else {})
+        weights = dict(alloc.get("weights") or {})
+        budget = _safe_float(weights.get("scalping", 0.0), 0.0)
+        risk_level = str(risk.get("risk_level", "LOW"))
+        signal = "TRADE" if (budget >= 0.2 and risk_level in {"LOW", "MEDIUM"}) else "STANDBY"
+        summary = f"signal={signal} budget={budget:.0%} risk={risk_level}"
+        return AgentOutput(
+            agent=self.name,
+            summary=summary,
+            payload={
+                "signal": signal,
+                "budget_weight": budget,
+                "risk_level": risk_level,
+                "reference_action": str(state.last_action or "HOLD"),
+            },
+        )
+
+
+class DefensiveInvestAgent(BaseAgent):
+    name = "invest_defensive"
+
+    def execute(self, state: BotState, context: dict[str, Any]) -> AgentOutput:
+        by_name: dict[str, AgentOutput] = dict(context.get("by_name") or {})
+        alloc = (by_name.get("capital_allocation").payload if by_name.get("capital_allocation") else {})
+        risk = (by_name.get("risk_guard").payload if by_name.get("risk_guard") else {})
+        weights = dict(alloc.get("weights") or {})
+        budget = _safe_float(weights.get("defensive", 0.0), 0.0)
+        risk_level = str(risk.get("risk_level", "LOW"))
+        posture = "HEDGE" if risk_level in {"HIGH", "CRITICAL"} else "BUFFER"
+        summary = f"posture={posture} budget={budget:.0%} risk={risk_level}"
+        return AgentOutput(
+            agent=self.name,
+            summary=summary,
+            payload={
+                "posture": posture,
+                "budget_weight": budget,
+                "risk_level": risk_level,
+                "cash_balance": _safe_float(state.cash_balance, 0.0),
+            },
+        )
+
+
 class ExecutionAgent(BaseAgent):
     name = "execution"
 
@@ -206,11 +334,17 @@ class ManagerAgent:
     ) -> None:
         self.report_interval_seconds = max(60, int(report_interval_seconds))
         self.cycle_seconds = max(5, int(cycle_seconds))
-        self.agents: list[BaseAgent] = [
+        self.core_agents: list[BaseAgent] = [
             MarketAnalysisAgent(),
             InvestmentStrategyAgent(),
             RiskGuardAgent(),
             ExecutionAgent(),
+        ]
+        self.capital_agent = CapitalAllocationAgent()
+        self.invest_agents: list[BaseAgent] = [
+            TrendInvestAgent(),
+            ScalpingInvestAgent(),
+            DefensiveInvestAgent(),
         ]
         self.reporting_agent = ReportingAgent(report_path=report_path)
 
@@ -224,10 +358,12 @@ class ManagerAgent:
 
         while not stop_event.is_set():
             outputs: list[AgentOutput] = []
-            context: dict[str, Any] = {"bot_thread": bot_thread}
-            for agent in self.agents:
+            by_name: dict[str, AgentOutput] = {}
+            base_context: dict[str, Any] = {"bot_thread": bot_thread, "by_name": by_name}
+
+            for agent in self.core_agents:
                 try:
-                    output = agent.execute(state, context)
+                    output = agent.execute(state, base_context)
                 except Exception as exc:
                     output = AgentOutput(
                         agent=agent.name,
@@ -235,6 +371,31 @@ class ManagerAgent:
                         payload={"error": str(exc)},
                     )
                 outputs.append(output)
+                by_name[output.agent] = output
+
+            try:
+                alloc_output = self.capital_agent.execute(state, {"by_name": by_name, "bot_thread": bot_thread})
+            except Exception as exc:
+                alloc_output = AgentOutput(
+                    agent=self.capital_agent.name,
+                    summary=f"error={exc}",
+                    payload={"error": str(exc)},
+                )
+            outputs.append(alloc_output)
+            by_name[alloc_output.agent] = alloc_output
+
+            invest_context: dict[str, Any] = {"bot_thread": bot_thread, "by_name": by_name}
+            for agent in self.invest_agents:
+                try:
+                    output = agent.execute(state, invest_context)
+                except Exception as exc:
+                    output = AgentOutput(
+                        agent=agent.name,
+                        summary=f"error={exc}",
+                        payload={"error": str(exc)},
+                    )
+                outputs.append(output)
+                by_name[output.agent] = output
 
             if time.time() >= next_report_at:
                 report_output = self.reporting_agent.execute(state, {"agent_outputs": outputs})

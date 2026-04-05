@@ -277,6 +277,10 @@ Hierarchy (recommended):
 - Market Analysis Agent: evaluates regime, confidence, and session conditions
 - Investment Strategy Agent: converts analysis + selection quality into action hints
 - Risk Guard Agent: checks heat, stale data, and halt conditions
+- Capital Allocation Agent: dynamically splits budget across invest-agent pods
+- Trend Invest Agent: manages trend-following allocation slice
+- Scalping Invest Agent: manages short-horizon allocation slice
+- Defensive Invest Agent: manages cash/hedge allocation slice
 - Execution Agent: monitors runtime health and detects startup/runtime failures
 - Reporting Agent: writes structured manager reports to JSON and log stream
 
